@@ -274,6 +274,11 @@ export class EnvironmentController {
     this.snapshot.cyclePaused = paused;
   }
 
+  public setTimeOfDay(t: number): void {
+    this.timeOfDay = ((t % 1.0) + 1.0) % 1.0;
+    this.applyAtmosphere(0);
+  }
+
   public isCyclePaused(): boolean {
     return this.cyclePaused;
   }

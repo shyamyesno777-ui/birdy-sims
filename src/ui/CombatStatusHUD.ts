@@ -12,17 +12,27 @@ export class CombatStatusHUD {
   private readonly hpValueEl: HTMLSpanElement;
   private readonly hpBarFillEl: HTMLDivElement;
   private readonly killsValueEl: HTMLSpanElement;
+  private readonly respectValueEl: HTMLSpanElement;
   private readonly rebellionBadgeEl: HTMLDivElement;
+  private readonly intimidatePromptEl: HTMLDivElement;
   private readonly hurtFlashEl: HTMLDivElement;
   private readonly downedBannerEl: HTMLDivElement;
+  private readonly gameOverOverlayEl: HTMLDivElement;
+  private readonly gameOverStatsEl: HTMLDivElement;
+  private readonly restartBtnEl: HTMLButtonElement;
 
   private hurtFlashTimer: number | null = null;
   private alertBannerTimer: number | null = null;
   private visible = false;
+  private gameOverVisible = false;
   private currentHp = 100;
   private currentMaxHp = 100;
   private currentKills = 0;
+  private currentRespect = 0;
   private currentMode: RebellionMode = 'peaceful';
+  private isAdmired = false;
+  private perchCooldownSec = 0;
+  public onRestart?: () => void;
 
   constructor(parent: HTMLElement) {
     this.root = document.createElement('div');
@@ -76,15 +86,35 @@ export class CombatStatusHUD {
     killsChip.appendChild(killsLabel);
     killsChip.appendChild(this.killsValueEl);
 
+    const respectChip = document.createElement('div');
+    respectChip.className = 'combat-kills-chip combat-respect-chip';
+
+    const respectLabel = document.createElement('span');
+    respectLabel.className = 'combat-label';
+    respectLabel.textContent = 'Respect';
+
+    this.respectValueEl = document.createElement('span');
+    this.respectValueEl.className = 'combat-kills-num';
+    this.respectValueEl.textContent = '0';
+
+    respectChip.appendChild(respectLabel);
+    respectChip.appendChild(this.respectValueEl);
+
     this.rebellionBadgeEl = document.createElement('div');
     this.rebellionBadgeEl.className = 'combat-rebellion-badge is-peaceful';
     this.rebellionBadgeEl.textContent = 'Peaceful';
 
+    this.intimidatePromptEl = document.createElement('div');
+    this.intimidatePromptEl.className = 'combat-intimidate-prompt is-hidden';
+    this.intimidatePromptEl.textContent = '[E] Intimidate (+25 Respect XP)';
+
     statsRow.appendChild(killsChip);
+    statsRow.appendChild(respectChip);
     statsRow.appendChild(this.rebellionBadgeEl);
 
     this.root.appendChild(healthCard);
     this.root.appendChild(statsRow);
+    this.root.appendChild(this.intimidatePromptEl);
     parent.appendChild(this.root);
 
     // Subtle edge hurt flash (pointer-events: none)
@@ -99,6 +129,61 @@ export class CombatStatusHUD {
     this.downedBannerEl.setAttribute('aria-hidden', 'true');
     this.downedBannerEl.textContent = 'FEATHER DOWN — Recovering...';
     parent.appendChild(this.downedBannerEl);
+
+    // Game Over Overlay with Restart button when Birdy Health reaches 0 HP
+    this.gameOverOverlayEl = document.createElement('div');
+    this.gameOverOverlayEl.id = 'game-over-overlay';
+    this.gameOverOverlayEl.className = 'game-over-overlay is-hidden';
+    this.gameOverOverlayEl.setAttribute('aria-hidden', 'true');
+    this.gameOverOverlayEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+    this.gameOverOverlayEl.addEventListener('click', (e) => e.stopPropagation());
+
+    const gameOverCard = document.createElement('div');
+    gameOverCard.className = 'game-over-card';
+
+    const gameOverBadge = document.createElement('div');
+    gameOverBadge.className = 'game-over-badge';
+    gameOverBadge.textContent = '0 HP · FEATHER DOWN';
+
+    const gameOverTitle = document.createElement('h2');
+    gameOverTitle.className = 'game-over-title';
+    gameOverTitle.textContent = 'SPARROW RAMPAGE';
+
+    const gameOverSub = document.createElement('p');
+    gameOverSub.className = 'game-over-sub';
+    gameOverSub.textContent = 'Birdy was knocked out of the sky!';
+
+    this.gameOverStatsEl = document.createElement('div');
+    this.gameOverStatsEl.className = 'game-over-stats';
+    this.gameOverStatsEl.textContent = 'Kills: 0 · Respect: 0 XP';
+
+    this.restartBtnEl = document.createElement('button');
+    this.restartBtnEl.id = 'restart-game-btn';
+    this.restartBtnEl.type = 'button';
+    this.restartBtnEl.className = 'game-over-restart-btn';
+    this.restartBtnEl.textContent = 'Restart';
+    this.restartBtnEl.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.triggerRestart();
+    });
+
+    gameOverCard.appendChild(gameOverBadge);
+    gameOverCard.appendChild(gameOverTitle);
+    gameOverCard.appendChild(gameOverSub);
+    gameOverCard.appendChild(this.gameOverStatsEl);
+    gameOverCard.appendChild(this.restartBtnEl);
+    this.gameOverOverlayEl.appendChild(gameOverCard);
+    parent.appendChild(this.gameOverOverlayEl);
+  }
+
+  public triggerRestart(): void {
+    this.gameOverVisible = false;
+    this.gameOverOverlayEl.classList.add('is-hidden');
+    this.gameOverOverlayEl.setAttribute('aria-hidden', 'true');
+    this.downedBannerEl.classList.add('is-hidden');
+    this.downedBannerEl.setAttribute('aria-hidden', 'true');
+    this.onRestart?.();
   }
 
   public setVisible(visible: boolean): void {
@@ -119,16 +204,27 @@ export class CombatStatusHUD {
     this.hpBarFillEl.classList.toggle('is-warn', pct <= 50 && pct > 25);
     this.hpBarFillEl.classList.toggle('is-danger', pct <= 25);
 
-    if (downed) {
+    if (downed || this.currentHp <= 0) {
       if (this.alertBannerTimer !== null) {
         window.clearTimeout(this.alertBannerTimer);
         this.alertBannerTimer = null;
       }
       this.downedBannerEl.classList.remove('is-skirmish-alert');
       this.downedBannerEl.textContent = 'FEATHER DOWN — Recovering...';
+      this.gameOverVisible = true;
+      this.gameOverStatsEl.textContent = `Kills: ${this.currentKills} · Respect: ${this.currentRespect} XP`;
+      this.gameOverOverlayEl.classList.remove('is-hidden');
+      this.gameOverOverlayEl.setAttribute('aria-hidden', 'false');
+      if (document.pointerLockElement) {
+        document.exitPointerLock?.();
+      }
+      this.restartBtnEl.focus({ preventScroll: true });
+    } else if (!this.gameOverVisible) {
+      this.gameOverOverlayEl.classList.add('is-hidden');
+      this.gameOverOverlayEl.setAttribute('aria-hidden', 'true');
     }
-    this.downedBannerEl.classList.toggle('is-hidden', !downed);
-    this.downedBannerEl.setAttribute('aria-hidden', downed ? 'false' : 'true');
+    this.downedBannerEl.classList.toggle('is-hidden', !downed && !this.gameOverVisible);
+    this.downedBannerEl.setAttribute('aria-hidden', downed || this.gameOverVisible ? 'false' : 'true');
 
     if (tookDamage) {
       this.hurtFlashEl.classList.remove('is-active');
@@ -147,16 +243,39 @@ export class CombatStatusHUD {
   public setKillsAndMode(kills: number, mode: RebellionMode): void {
     this.currentKills = kills;
     this.currentMode = mode;
-
     this.killsValueEl.textContent = String(this.currentKills);
+    this.refreshBadgeText();
+  }
 
-    this.rebellionBadgeEl.classList.remove('is-peaceful', 'is-skirmish', 'is-major');
+  public setAdmiredAndCooldown(admired: boolean, cooldownRemaining: number): void {
+    this.isAdmired = admired;
+    this.perchCooldownSec = Math.max(0, Math.ceil(cooldownRemaining));
+    this.refreshBadgeText();
+  }
+
+  private refreshBadgeText(): void {
+    this.rebellionBadgeEl.classList.remove(
+      'is-peaceful',
+      'is-admired',
+      'is-skirmish',
+      'is-major'
+    );
+    if (this.isAdmired) {
+      this.rebellionBadgeEl.classList.add('is-admired');
+      this.rebellionBadgeEl.textContent = 'Admired ♥ +2 HP/s';
+      return;
+    }
+    const cdSuffix =
+      this.perchCooldownSec > 0 ? ` · Shoo ${this.perchCooldownSec}s` : '';
     if (this.currentMode === 'major') {
       this.rebellionBadgeEl.classList.add('is-major');
-      this.rebellionBadgeEl.textContent = 'MAJOR REBELLION · 40%';
+      this.rebellionBadgeEl.textContent = `MAJOR REBELLION · 40%${cdSuffix}`;
     } else if (this.currentMode === 'skirmish') {
       this.rebellionBadgeEl.classList.add('is-skirmish');
-      this.rebellionBadgeEl.textContent = 'REBELLION · 10% ARMED';
+      this.rebellionBadgeEl.textContent = `REBELLION · 10% ARMED${cdSuffix}`;
+    } else if (this.perchCooldownSec > 0) {
+      this.rebellionBadgeEl.classList.add('is-skirmish');
+      this.rebellionBadgeEl.textContent = `Perch Cooldown · ${this.perchCooldownSec}s`;
     } else {
       this.rebellionBadgeEl.classList.add('is-peaceful');
       this.rebellionBadgeEl.textContent = 'Peaceful';
@@ -187,6 +306,54 @@ export class CombatStatusHUD {
     }, 2600);
   }
 
+  public showExtremeRageAlert(): void {
+    if (this.currentHp <= 0) return;
+    if (this.alertBannerTimer !== null) {
+      window.clearTimeout(this.alertBannerTimer);
+      this.alertBannerTimer = null;
+    }
+    this.downedBannerEl.textContent = 'EXTREME RAGE — TROPHY SHATTERED! LOCAL REBELLION!';
+    this.downedBannerEl.classList.remove('is-skirmish-alert');
+    this.downedBannerEl.classList.remove('is-hidden');
+    this.downedBannerEl.setAttribute('aria-hidden', 'false');
+    this.alertBannerTimer = window.setTimeout(() => {
+      this.alertBannerTimer = null;
+      if (this.currentHp > 0) {
+        this.downedBannerEl.classList.add('is-hidden');
+        this.downedBannerEl.setAttribute('aria-hidden', 'true');
+        this.downedBannerEl.textContent = 'FEATHER DOWN — Recovering...';
+      }
+    }, 2800);
+  }
+
+  public setRespectXp(totalRespect: number, gained: number): void {
+    this.currentRespect = Math.max(0, Math.round(totalRespect));
+    this.respectValueEl.textContent = `${this.currentRespect}`;
+    if (gained > 0 && this.currentHp > 0) {
+      if (this.alertBannerTimer !== null) {
+        window.clearTimeout(this.alertBannerTimer);
+        this.alertBannerTimer = null;
+      }
+      this.downedBannerEl.textContent = `INTIMIDATED! +${Math.round(gained)} RESPECT XP`;
+      this.downedBannerEl.classList.add('is-skirmish-alert');
+      this.downedBannerEl.classList.remove('is-hidden');
+      this.downedBannerEl.setAttribute('aria-hidden', 'false');
+      this.alertBannerTimer = window.setTimeout(() => {
+        this.alertBannerTimer = null;
+        if (this.currentHp > 0) {
+          this.downedBannerEl.classList.add('is-hidden');
+          this.downedBannerEl.classList.remove('is-skirmish-alert');
+          this.downedBannerEl.setAttribute('aria-hidden', 'true');
+          this.downedBannerEl.textContent = 'FEATHER DOWN — Recovering...';
+        }
+      }, 1800);
+    }
+  }
+
+  public setIntimidateAvailable(available: boolean): void {
+    this.intimidatePromptEl.classList.toggle('is-hidden', !available);
+  }
+
   public dispose(): void {
     if (this.hurtFlashTimer !== null) {
       window.clearTimeout(this.hurtFlashTimer);
@@ -199,5 +366,6 @@ export class CombatStatusHUD {
     this.root.remove();
     this.hurtFlashEl.remove();
     this.downedBannerEl.remove();
+    this.gameOverOverlayEl.remove();
   }
 }

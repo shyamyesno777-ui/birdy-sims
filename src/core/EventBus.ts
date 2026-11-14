@@ -31,6 +31,23 @@ export type GameEventMap = {
     kills: number;
     hostileChance: number;
   };
+  'crowd:admired': {
+    admired: boolean;
+    cooldownRemaining: number;
+  };
+  'crowd:trophyShattered': {
+    slotIndex: number;
+    pos: THREE.Vector3;
+    rageAccuracy: number;
+  };
+  'crowd:intimidated': {
+    slotIndex: number;
+    respectGained: number;
+    totalRespect: number;
+  };
+  'crowd:intimidatePrompt': {
+    available: boolean;
+  };
   'session:disposed': void;
 };
 

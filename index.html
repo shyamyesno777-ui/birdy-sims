@@ -7,10 +7,10 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <title>Sparrow Game</title>
-    <meta name="description" content="Play as a house sparrow escaping an artist's attic studio to cause playful mischief across a storybook European neighborhood." />
-    <meta property="og:title" content="Sparrow Game" />
-    <meta property="og:description" content="Play as a house sparrow escaping an artist's attic studio to cause playful mischief across a storybook European neighborhood." />
+    <title>Remix Sparrow Sim</title>
+    <meta name="description" content="Take flight as a curious house sparrow who escapes an artist's sunlit attic studio to explore a vibrant, four-block storybook European neighborhood. Swoop across rooftops, canal quays, and bustling bistro terraces to complete 12 playful mischief and heartwarming deeds" />
+    <meta property="og:title" content="Remix Sparrow Sim" />
+    <meta property="og:description" content="Take flight as a curious house sparrow who escapes an artist's sunlit attic studio to explore a vibrant, four-block storybook European neighborhood. Swoop across rooftops, canal quays, and bustling bistro terraces to complete 12 playful mischief and heartwarming deeds" />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="icon" href="data:," />
@@ -18,7 +18,9 @@
   </head>
   <body>
     <div id="loading-screen" class="loading-screen" aria-live="polite">
-      <div class="loading-minimal">
+      <div class="loading-minimal start-screen-card">
+        <div class="start-screen-badge">STORYBOOK SANDBOX EDITION</div>
+        <h1 class="start-screen-title">SPARROW RAMPAGE</h1>
         <div
           id="sparrow-progress"
           class="sparrow-progress"
@@ -28,7 +30,7 @@
           aria-valuemax="100"
           aria-valuenow="0"
         >
-          <svg viewBox="0 0 220 136" width="184" height="114" aria-hidden="true">
+          <svg viewBox="0 0 220 136" width="164" height="102" aria-hidden="true">
             <defs>
               <clipPath id="sparrow-fill-clip">
                 <rect id="sparrow-fill-rect" x="18" y="0" width="0" height="136" />
@@ -54,9 +56,17 @@
             />
           </svg>
         </div>
+        <div class="start-controls-legend" aria-label="Controls Legend">
+          <div class="start-control-item"><kbd>WASD / Mouse</kbd><span>Fly</span></div>
+          <div class="start-control-item"><kbd>G</kbd><span>Gun</span></div>
+          <div class="start-control-item"><kbd>E</kbd><span>Intimidate</span></div>
+          <div class="start-control-item"><kbd>F</kbd><span>Recruit Bird</span></div>
+          <div class="start-control-item"><kbd>P / Tab</kbd><span>Phone</span></div>
+          <div class="start-control-item"><kbd>C</kbd><span>Drop Crumbs</span></div>
+        </div>
         <div id="loading-status" class="loading-status">LOADING</div>
         <button id="press-start-btn" class="press-start-btn is-hidden" type="button" data-start="true">
-          START
+          Play
         </button>
       </div>
     </div>

@@ -852,6 +852,32 @@ canvas {
   color: #29252c;
 }
 
+.combat-respect-chip {
+  border-color: rgba(181, 122, 22, 0.42);
+}
+
+.combat-intimidate-prompt {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: rgba(245, 190, 73, 0.95);
+  color: #2b1d07;
+  border: 2px solid #9e6a11;
+  box-shadow: 0 6px 16px rgba(18, 22, 34, 0.22);
+  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
+}
+
+.combat-intimidate-prompt.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+}
+
 .combat-rebellion-badge {
   display: inline-flex;
   align-items: center;
@@ -870,6 +896,12 @@ canvas {
   background: rgba(251, 245, 232, 0.88);
   color: rgba(41, 37, 44, 0.68);
   border-color: rgba(68, 56, 46, 0.2);
+}
+
+.combat-rebellion-badge.is-admired {
+  background: #f5697e;
+  color: #fffaf5;
+  border-color: #b53449;
 }
 
 .combat-rebellion-badge.is-skirmish {
@@ -930,3 +962,468 @@ canvas {
   visibility: hidden;
   transform: translate(-50%, 8px);
 }
+
+/* Top-Center Day Cycle & Bird Level HUD */
+.aerial-top-hud {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 14px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 19;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 0.35s ease, transform 0.35s ease, visibility 0.35s ease;
+}
+
+.aerial-top-hud.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -10px);
+}
+
+.aerial-hud-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(251, 245, 232, 0.92);
+  color: #29252c;
+  border: 2px solid rgba(68, 56, 46, 0.24);
+  box-shadow: 0 6px 16px rgba(18, 22, 34, 0.16);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.aerial-hud-strong {
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.aerial-hud-sub {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(41, 37, 44, 0.68);
+}
+
+.aerial-xp-track {
+  width: 48px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(58, 45, 36, 0.16);
+  overflow: hidden;
+}
+
+.aerial-xp-fill {
+  width: 0%;
+  height: 100%;
+  border-radius: 999px;
+  background: #d9912b;
+  transition: width 0.2s ease-out;
+}
+
+.aerial-phone-toggle {
+  appearance: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.1s ease;
+}
+
+.aerial-phone-toggle:hover {
+  background: rgba(255, 251, 243, 0.98);
+  border-color: rgba(68, 56, 46, 0.48);
+  transform: translateY(-1px);
+}
+
+.aerial-court-prompt {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 124px);
+  transform: translateX(-50%);
+  z-index: 23;
+  pointer-events: none;
+  padding: 6px 13px;
+  border-radius: 999px;
+  background: rgba(245, 105, 126, 0.95);
+  color: #fffaf5;
+  border: 2px solid #a82e44;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  box-shadow: 0 8px 20px rgba(18, 20, 30, 0.24);
+  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
+}
+
+.aerial-court-prompt.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, 6px);
+}
+
+.aerial-toast {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 58px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 26;
+  pointer-events: none;
+  padding: 7px 15px;
+  border-radius: 999px;
+  background: rgba(41, 35, 38, 0.94);
+  color: #fff7eb;
+  border: 2px solid rgba(229, 178, 72, 0.72);
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  box-shadow: 0 10px 24px rgba(16, 18, 26, 0.28);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
+}
+
+.aerial-toast.is-positive {
+  background: rgba(252, 246, 234, 0.97);
+  color: #29252c;
+  border-color: #d9912b;
+}
+
+.aerial-toast.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -8px);
+}
+
+/* Bottom-Right Mini Bird Smartphone UI ('P' / 'Tab') */
+.bird-phone {
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 16px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+  z-index: 28;
+  width: 228px;
+  padding: 10px 11px 12px;
+  border-radius: 26px;
+  background: #232229;
+  color: #f8f2e4;
+  border: 3px solid #4e4959;
+  box-shadow: 0 16px 36px rgba(12, 14, 22, 0.42);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: auto;
+  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), visibility 0.22s ease;
+}
+
+.bird-phone.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(18px) scale(0.95);
+}
+
+.bird-phone-notch {
+  display: flex;
+  justify-content: center;
+  padding-bottom: 2px;
+}
+
+.bird-phone-speaker {
+  width: 48px;
+  height: 5px;
+  border-radius: 999px;
+  background: #3d3b46;
+}
+
+.bird-phone-statusbar {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: rgba(248, 242, 228, 0.72);
+  padding: 0 4px;
+}
+
+.bird-phone-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 12px;
+  background: #31303a;
+}
+
+.bird-phone-title {
+  font-size: 14px;
+  font-weight: 900;
+  color: #fffaf0;
+}
+
+.bird-phone-count {
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #f5697e;
+  color: #fffaf5;
+  font-size: 11px;
+  font-weight: 900;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bird-phone-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 92px;
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 12px;
+  background: #fbf5e8;
+  color: #29252c;
+}
+
+.bird-phone-empty {
+  font-size: 11.5px;
+  line-height: 1.38;
+  color: rgba(41, 37, 44, 0.72);
+  font-weight: 600;
+  padding: 4px;
+}
+
+.bird-phone-contact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  background: #efe5d1;
+  border: 1px solid rgba(68, 56, 46, 0.16);
+}
+
+.bird-phone-contact-name {
+  font-size: 12px;
+  font-weight: 800;
+  color: #262228;
+}
+
+.bird-phone-contact-state {
+  font-size: 10.5px;
+  font-weight: 800;
+  color: #b53449;
+}
+
+.bird-phone-status {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffd778;
+}
+
+.bird-phone-call-btn {
+  appearance: none;
+  border: 2px solid #2b6b3c;
+  background: #3f9154;
+  color: #fffaf0;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+  transition: transform 0.1s ease, background-color 0.14s ease, opacity 0.14s ease;
+}
+
+.bird-phone-call-btn:hover:not(:disabled) {
+  background: #48a660;
+  transform: translateY(-1px);
+}
+
+.bird-phone-call-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bird-phone-close-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: rgba(248, 242, 228, 0.64);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 2px 0 0;
+}
+
+.bird-phone-close-btn:hover {
+  color: #fffaf0;
+}
+
+/* Public Launch Start Screen ("SPARROW RAMPAGE") & Controls Legend */
+.start-screen-card {
+  width: min(460px, calc(100vw - 28px));
+  padding: 26px 24px 24px;
+  border-radius: 22px;
+  background: rgba(252, 246, 234, 0.94);
+  border: 2px solid rgba(68, 56, 46, 0.24);
+  box-shadow: 0 18px 42px rgba(24, 20, 16, 0.18);
+  gap: 14px;
+}
+
+.start-screen-badge {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #8c531e;
+  background: rgba(235, 220, 194, 0.72);
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(140, 83, 30, 0.25);
+}
+
+.start-screen-title {
+  font-size: clamp(24px, 5vw, 32px);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: #2b221c;
+  text-align: center;
+  line-height: 1.1;
+}
+
+.start-controls-legend {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 10px;
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: rgba(239, 229, 209, 0.72);
+  border: 1.5px solid rgba(68, 56, 46, 0.16);
+}
+
+.start-control-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #2f2823;
+}
+
+.start-control-item kbd {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: #fbf5e8;
+  border: 1px solid #cbbba0;
+  box-shadow: 0 2px 0 #b7a68b;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 800;
+  color: #29231e;
+  white-space: nowrap;
+}
+
+/* Game Over Overlay & Restart Button (0 HP) */
+.game-over-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(24, 18, 18, 0.58);
+  pointer-events: auto;
+  transition: opacity 0.24s ease, visibility 0.24s ease;
+}
+
+.game-over-overlay.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.game-over-card {
+  width: min(380px, calc(100vw - 32px));
+  padding: 24px 22px;
+  border-radius: 20px;
+  background: #fbf5e8;
+  color: #29252c;
+  border: 2.5px solid #9e3128;
+  box-shadow: 0 20px 48px rgba(12, 10, 14, 0.45);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.game-over-badge {
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: #c9382e;
+  color: #fff8f0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.game-over-title {
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  color: #2b221c;
+}
+
+.game-over-sub {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(41, 37, 44, 0.76);
+}
+
+.game-over-stats {
+  font-size: 13px;
+  font-weight: 800;
+  color: #3a2d24;
+  padding: 6px 14px;
+  border-radius: 10px;
+  background: #efe5d1;
+}
+
+.game-over-restart-btn {
+  appearance: none;
+  margin-top: 4px;
+  padding: 10px 30px;
+  border-radius: 999px;
+  border: 2px solid #2b6b3c;
+  background: #3f9154;
+  color: #fffaf0;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(24, 38, 28, 0.24);
+  transition: transform 0.12s ease, background-color 0.14s ease;
+}
+
+.game-over-restart-btn:hover,
+.game-over-restart-btn:focus-visible {
+  outline: none;
+  background: #48a660;
+  transform: translateY(-1px);
+}
+
+

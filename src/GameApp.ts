@@ -27,6 +27,7 @@ import { EventBus, type GameEventMap } from './core/EventBus.ts';
 import { EnvironmentController } from './environment/EnvironmentController.ts';
 import { CrowdRebellionManager } from './entities/CrowdRebellionManager.ts';
 import { CombatStatusHUD } from './ui/CombatStatusHUD.ts';
+import { AerialSocialAndDayManager } from './entities/AerialSocialAndDayManager.ts';
 
 export interface SparrowGameSession {
   events: EventBus<GameEventMap>;
@@ -190,7 +191,7 @@ export async function startGameApp(
   const physics = new PhysicsWorld();
   const perches = new PerchSystem();
   const npcs = new NPCManager(scene, perches, physics, audio, fx);
-  const crowdManager = new CrowdRebellionManager(scene, physics, audio, fx, events);
+  const crowdManager = new CrowdRebellionManager(scene, perches, physics, audio, fx, events);
 
   events.on('crowd:kill', ({ kills, mode }) => {
     combatHud.setKillsAndMode(kills, mode);
@@ -201,12 +202,40 @@ export async function startGameApp(
   events.on('rebellion:changed', ({ mode }) => {
     combatHud.showEscalationAlert(mode);
   });
+  events.on('crowd:admired', ({ admired, cooldownRemaining }) => {
+    combatHud.setAdmiredAndCooldown(admired, cooldownRemaining);
+  });
+  events.on('crowd:trophyShattered', () => {
+    combatHud.showExtremeRageAlert();
+  });
+  events.on('crowd:intimidated', ({ respectGained, totalRespect }) => {
+    combatHud.setRespectXp(totalRespect, respectGained);
+  });
+  events.on('crowd:intimidatePrompt', ({ available }) => {
+    combatHud.setIntimidateAvailable(available);
+  });
 
   // Build the 4-block neighborhood & conservatory atelier, reporting loading progress
   const cityBuilder = new CityBlockBuilder(scene, physics, perches, fx, npcs, audio);
   const worldHandles = await cityBuilder.build((pct) => loadingScreen.advance(pct));
   fx.initLampHalos(worldHandles.streetlampPositions);
   perches.refreshDynamicGrid();
+
+  const aerialManager = new AerialSocialAndDayManager(
+    scene,
+    physics,
+    audio,
+    fx,
+    events,
+    environment,
+    container,
+    worldHandles.streetlampPositions
+  );
+
+  combatHud.onRestart = () => {
+    crowdManager.reviveBird();
+    aerialManager.reviveBird();
+  };
 
   const wakeAudio = () => {
     try {
@@ -238,7 +267,7 @@ export async function startGameApp(
   // Compose Phase 1 story NPCs with Phase 2 object-pooled crowd NPCs without touching SparrowController gun/flight code
   sparrow.npcs = {
     handlePlayerPeck: (beakPos, birdPos) => npcs.handlePlayerPeck(beakPos, birdPos),
-    sampleShooGust: (playerPos) => npcs.sampleShooGust(playerPos),
+    sampleShooGust: (playerPos) => crowdManager.sampleEjectGust() ?? npcs.sampleShooGust(playerPos),
     notifyTablePeck: (beakPos) => npcs.notifyTablePeck(beakPos),
     isHumanCollider: (body) => npcs.isHumanCollider(body),
     notifyAcousticShock: (origin, kind) => npcs.notifyAcousticShock(origin, kind),
@@ -246,6 +275,20 @@ export async function startGameApp(
       npcs.checkFallingDroppingHit(prevPos, nextPos, birdPos),
     checkBulletHit: (prevPos, nextPos, birdPos) => {
       const crowdCand = crowdManager.findBulletHit(prevPos, nextPos);
+      const aerialCand = aerialManager.findBulletHit(prevPos, nextPos);
+      if (aerialCand && (!crowdCand || aerialCand.distance < crowdCand.distance)) {
+        const storyHit = npcs.checkBulletHit(prevPos, aerialCand.point, birdPos);
+        if (storyHit?.hit) {
+          return storyHit;
+        }
+        aerialManager.applyBulletHit(aerialCand);
+        return {
+          hit: true,
+          kind: 'companion' as const,
+          distance: aerialCand.distance,
+          point: aerialCand.point,
+        };
+      }
       const storyEnd = crowdCand ? crowdCand.point : nextPos;
       const storyHit = npcs.checkBulletHit(prevPos, storyEnd, birdPos);
       if (storyHit?.hit) {
@@ -310,13 +353,15 @@ export async function startGameApp(
     birdCam.camera.getWorldPosition(outOrigin);
     birdCam.camera.getWorldDirection(outDir);
   };
+  let isGunEquipped = false;
   sparrow.onGunToggleCallback = (equipped) => {
+    isGunEquipped = equipped;
     journalHud.setGunEquipped(equipped);
     events.emit('gun:toggled', { equipped });
   };
   sparrow.onGunFiredCallback = (pos, dir) => {
     journalHud.triggerCrosshairRecoil();
-    crowdManager.onPlayerShot(pos, sparrow.position);
+    crowdManager.onPlayerShot(pos, sparrow.position, sparrow.activePerchId);
     events.emit('gun:fired', { pos, dir });
   };
 
@@ -437,6 +482,7 @@ export async function startGameApp(
     director.dispose();
     sparrow.dispose();
     birdCam.dispose();
+    aerialManager.dispose();
     crowdManager.dispose();
     npcs.dispose();
     cityBuilder.dispose();
@@ -471,6 +517,7 @@ export async function startGameApp(
       perches,
       npcs,
       crowdManager,
+      aerialManager,
       fx,
       audio,
       events,
@@ -499,6 +546,17 @@ export async function startGameApp(
     { signal: appAbort.signal }
   );
 
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (disposed || !sparrow.inputEnabled || !isGunEquipped) return;
+      if (e.code === 'KeyE' && !e.repeat) {
+        crowdManager.tryIntimidate(sparrow.position, birdCam.camera);
+      }
+    },
+    { signal: appAbort.signal }
+  );
+
   let lastTime = performance.now();
   let elapsed = 0;
   let frameTimeEmaMs = 16.67;
@@ -511,6 +569,7 @@ export async function startGameApp(
     if (disposed) return;
     wakeAudio();
     combatHud.setVisible(true);
+    aerialManager.setActive(true);
     sparrow.clearQueuedInputs();
     birdCam.beginIntroSequence(
       () => {
@@ -631,8 +690,12 @@ export async function startGameApp(
         elapsed,
         sparrow.position,
         birdCam.camera,
-        worldHandles.getTramX()
+        worldHandles.getTramX(),
+        sparrow.activePerchId,
+        isGunEquipped,
+        sparrow.velocity
       );
+      aerialManager.update(dt, elapsed, sparrow.position, isGunEquipped);
       perches.refreshDynamicGrid();
       director.update(dt);
       fx.setEnvironmentState({
