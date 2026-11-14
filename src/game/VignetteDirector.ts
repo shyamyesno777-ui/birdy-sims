@@ -635,6 +635,7 @@ export class VignetteDirector {
           this.step5WindowEscaped = true;
           this.sparrow.tutorialSafeZone = false;
           this.tutorial.complete();
+          this.tutorial.showStarterSpeechBubble();
           this.journalHud.setSeedsCount(this.sparrow.seedsGathered);
           this.journalHud.setVisible(true);
           this.audio.playVignetteBloom();

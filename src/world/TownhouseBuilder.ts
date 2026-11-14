@@ -49,6 +49,8 @@ export interface TownhouseSpec {
 export interface TownhouseBuildContext {
   root: THREE.Object3D;
   mat: THREE.Material;
+  buildingMat?: THREE.Material;
+  collectWarmWindows?: THREE.BufferGeometry[];
   physics: PhysicsWorld;
   perches: PerchSystem;
   createBouncyAwning: (
@@ -185,12 +187,17 @@ export function buildDetailedTownhouse(
           transformGeo(rbox(4.4, 15.4, 0.68, 0.1, PALETTE.woodWalnut, 1), {
             rot: [0, rotY, 0],
             pos: [gx, baseY + 7.8, gz],
-          }),
-          transformGeo(rcyl(2.2, 2.2, 0.72, PALETTE.windowWarmLit, 12), {
-            rot: axis === 'x' ? [0, 0, Math.PI * 0.5] : [Math.PI * 0.5, 0, 0],
-            pos: [gx, baseY + 15.4, gz],
           })
         );
+        const doorTransomGeo = transformGeo(rcyl(2.2, 2.2, 0.72, PALETTE.windowWarmLit, 12), {
+          rot: axis === 'x' ? [0, 0, Math.PI * 0.5] : [Math.PI * 0.5, 0, 0],
+          pos: [gx, baseY + 15.4, gz],
+        });
+        if (collectInto && ctx.collectWarmWindows) {
+          ctx.collectWarmWindows.push(doorTransomGeo);
+        } else {
+          parts.push(doorTransomGeo);
+        }
       } else {
         parts.push(
           transformGeo(rbox(6.0, 14.2, 0.5, 0.12, trim, 1), {
@@ -243,6 +250,15 @@ export function buildDetailedTownhouse(
         const glassCol = warmLit ? PALETTE.windowWarmLit : PALETTE.windowGlass;
 
         // Window frame, lintel crest, recessed glass, horizontal transoms & vertical mullion
+        const paneGeo = transformGeo(rbox(3.8, 10.2, 0.54, 0.06, glassCol, 1), {
+          rot: [0, rotY, 0],
+          pos: [wx, wy, wz],
+        });
+        if (warmLit && collectInto && ctx.collectWarmWindows) {
+          ctx.collectWarmWindows.push(paneGeo);
+        } else {
+          parts.push(paneGeo);
+        }
         parts.push(
           transformGeo(rbox(4.8, 11.4, 0.44, 0.1, trim, 1), {
             rot: [0, rotY, 0],
@@ -251,10 +267,6 @@ export function buildDetailedTownhouse(
           transformGeo(rbox(5.3, 0.48, 0.72, 0.06, trim, 1), {
             rot: [0, rotY, 0],
             pos: [wx, wy + 5.85, wz],
-          }),
-          transformGeo(rbox(3.8, 10.2, 0.54, 0.06, glassCol, 1), {
-            rot: [0, rotY, 0],
-            pos: [wx, wy, wz],
           }),
           transformGeo(rbox(3.9, 0.24, 0.62, 0.04, trim, 1), {
             rot: [0, rotY, 0],
@@ -519,8 +531,8 @@ export function buildDetailedTownhouse(
       collectInto.push(parts[i]);
     }
   } else {
-    houseMesh = new THREE.Mesh(mergeParts(parts), ctx.mat);
-    houseMesh.castShadow = true;
+    houseMesh = new THREE.Mesh(mergeParts(parts), ctx.buildingMat ?? ctx.mat);
+    houseMesh.castShadow = false;
     houseMesh.receiveShadow = true;
     houseMesh.geometry.computeBoundingSphere();
     ctx.root.add(houseMesh);

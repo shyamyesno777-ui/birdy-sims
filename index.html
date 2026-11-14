@@ -2,6 +2,67 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      (function () {
+        try {
+          var desc =
+            Object.getOwnPropertyDescriptor(window, 'fetch') ||
+            Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+          if (desc && desc.get && !desc.set && desc.configurable !== false) {
+            var currentFetch = desc.get.call(window);
+            Object.defineProperty(window, 'fetch', {
+              configurable: true,
+              enumerable: true,
+              get: function () {
+                return currentFetch;
+              },
+              set: function (fn) {
+                if (typeof fn === 'function') {
+                  currentFetch = fn;
+                }
+              },
+            });
+          }
+        } catch (_) {}
+
+        function isExtErr(file, msg, stack) {
+          var s = String(file || '') + ' ' + String(msg || '') + ' ' + String(stack || '');
+          return (
+            s.indexOf('chrome-extension://') !== -1 ||
+            s.indexOf('moz-extension://') !== -1 ||
+            s.indexOf('safari-extension://') !== -1 ||
+            s.indexOf('Cannot set property fetch of #<Window>') !== -1
+          );
+        }
+
+        window.addEventListener(
+          'error',
+          function (e) {
+            var stack = e.error && e.error.stack ? e.error.stack : '';
+            if (isExtErr(e.filename, e.message, stack)) {
+              e.stopImmediatePropagation();
+              e.preventDefault();
+              return false;
+            }
+          },
+          true
+        );
+
+        window.addEventListener(
+          'unhandledrejection',
+          function (e) {
+            var r = e.reason;
+            var msg = r && r.message ? r.message : String(r || '');
+            var stack = r && r.stack ? r.stack : '';
+            if (isExtErr('', msg, stack)) {
+              e.stopImmediatePropagation();
+              e.preventDefault();
+            }
+          },
+          true
+        );
+      })();
+    </script>
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
@@ -19,58 +80,101 @@
   <body>
     <div id="loading-screen" class="loading-screen" aria-live="polite">
       <div class="loading-minimal start-screen-card">
-        <div class="start-screen-badge">STORYBOOK SANDBOX EDITION</div>
         <h1 class="start-screen-title">SPARROW RAMPAGE</h1>
-        <div
-          id="sparrow-progress"
-          class="sparrow-progress"
-          role="progressbar"
-          aria-label="Loading"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          aria-valuenow="0"
-        >
-          <svg viewBox="0 0 220 136" width="164" height="102" aria-hidden="true">
-            <defs>
-              <clipPath id="sparrow-fill-clip">
-                <rect id="sparrow-fill-rect" x="18" y="0" width="0" height="136" />
-              </clipPath>
-              <g id="sparrow-silhouette-shape">
-                <path
-                  d="M 18 76 L 62 63 C 73 48 92 38 114 37 C 126 36 135 33 141 26 C 147 18 157 14 168 15 C 179 16 187 22 191 30 L 204 34 L 191 40 C 190 48 184 55 176 60 C 172 78 156 91 134 93 C 113 95 93 89 79 79 L 25 89 L 31 81 Z"
+        <div class="sparrow-hero-stage">
+          <div class="sparrow-ambient-icons" aria-hidden="true">
+            <span class="sparrow-float-icon is-note-1">♪</span>
+            <span class="sparrow-float-icon is-heart-1">♥</span>
+            <span class="sparrow-float-icon is-note-2">♫</span>
+          </div>
+          <div class="sparrow-celebrate-burst" aria-hidden="true">
+            <span class="celebrate-icon c1">♥</span>
+            <span class="celebrate-icon c2">✦</span>
+            <span class="celebrate-icon c3">♪</span>
+            <span class="celebrate-icon c4">✦</span>
+            <span class="celebrate-icon c5">♥</span>
+          </div>
+          <div
+            id="sparrow-progress"
+            class="sparrow-progress"
+            role="progressbar"
+            aria-label="Loading"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >
+            <svg viewBox="0 0 220 136" width="182" height="114" aria-hidden="true">
+              <defs>
+                <clipPath id="sparrow-fill-clip">
+                  <rect id="sparrow-fill-rect" x="18" y="0" width="0" height="136" />
+                </clipPath>
+                <g id="sparrow-silhouette-shape">
+                  <path
+                    d="M 18 76 L 62 63 C 73 48 92 38 114 37 C 126 36 135 33 141 26 C 147 18 157 14 168 15 C 179 16 187 22 191 30 L 204 34 L 191 40 C 190 48 184 55 176 60 C 172 78 156 91 134 93 C 113 95 93 89 79 79 L 25 89 L 31 81 Z"
+                  />
+                  <path
+                    d="M 118 91 L 114 114 M 114 114 L 105 117 M 114 114 L 123 116 M 134 91 L 133 114 M 133 114 L 125 117 M 133 114 L 143 116"
+                    stroke-width="3.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    fill="none"
+                  />
+                </g>
+              </defs>
+              <g class="sparrow-svg-body">
+                <use href="#sparrow-silhouette-shape" class="sparrow-silhouette-base" />
+                <use
+                  href="#sparrow-silhouette-shape"
+                  class="sparrow-silhouette-fill"
+                  clip-path="url(#sparrow-fill-clip)"
                 />
-                <path
-                  d="M 118 91 L 114 114 M 114 114 L 105 117 M 114 114 L 123 116 M 134 91 L 133 114 M 133 114 L 125 117 M 133 114 L 143 116"
-                  stroke-width="3.6"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  fill="none"
-                />
+                <g class="sparrow-cute-details">
+                  <!-- Warm cream belly -->
+                  <path
+                    d="M 88 74 C 105 89 144 92 167 68 C 154 78 122 81 95 69 Z"
+                    fill="#f4ead8"
+                    opacity="0.92"
+                  />
+                  <!-- Fluttering storybook wing -->
+                  <g class="sparrow-svg-wing">
+                    <path
+                      d="M 86 58 C 102 44 134 45 148 60 C 134 73 102 74 86 58 Z"
+                      fill="#9b5835"
+                      stroke="#4a2b1c"
+                      stroke-width="2"
+                    />
+                    <path
+                      d="M 98 56 C 110 50 128 51 138 58"
+                      fill="none"
+                      stroke="#f2e5d0"
+                      stroke-width="2.4"
+                      stroke-linecap="round"
+                    />
+                  </g>
+                  <!-- Head bob group: cheek, eye & cheerful beak -->
+                  <g class="sparrow-svg-head">
+                    <ellipse cx="164" cy="36" rx="10" ry="7" fill="#f7efe1" opacity="0.92" />
+                    <circle cx="171" cy="31" r="3.4" fill="#231c18" />
+                    <circle cx="172.2" cy="29.8" r="1.2" fill="#ffffff" />
+                    <ellipse cx="166" cy="39" rx="4.2" ry="2.6" fill="#eb8b84" opacity="0.72" />
+                    <path d="M 190 30 L 204 34 L 190 39 Z" fill="#ebb042" />
+                  </g>
+                </g>
               </g>
-            </defs>
-            <use href="#sparrow-silhouette-shape" class="sparrow-silhouette-base" />
-            <use
-              href="#sparrow-silhouette-shape"
-              class="sparrow-silhouette-fill"
-              clip-path="url(#sparrow-fill-clip)"
-            />
-          </svg>
-        </div>
-        <div class="start-controls-legend" aria-label="Controls Legend">
-          <div class="start-control-item"><kbd>WASD / Mouse</kbd><span>Fly</span></div>
-          <div class="start-control-item"><kbd>G</kbd><span>Gun</span></div>
-          <div class="start-control-item"><kbd>E</kbd><span>Intimidate</span></div>
-          <div class="start-control-item"><kbd>F</kbd><span>Recruit Bird</span></div>
-          <div class="start-control-item"><kbd>P / Tab</kbd><span>Phone</span></div>
-          <div class="start-control-item"><kbd>C</kbd><span>Drop Crumbs</span></div>
+            </svg>
+          </div>
         </div>
         <div id="loading-status" class="loading-status">LOADING</div>
         <button id="press-start-btn" class="press-start-btn is-hidden" type="button" data-start="true">
-          Play
+          PLAY
         </button>
       </div>
     </div>
+    <div id="sunrise-bloom-overlay" class="sunrise-bloom-overlay" aria-hidden="true"></div>
     <div id="app"></div>
+    <div id="flight-hint-pill" class="flight-hint-pill is-hidden" aria-live="polite">
+      WASD / Mouse to Fly
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

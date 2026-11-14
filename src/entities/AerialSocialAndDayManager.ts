@@ -3,6 +3,7 @@ import { PALETTE } from '../rendering/Palette.ts';
 import {
   createPastelMaterial,
   createUnlitPastelFXMaterial,
+  SHARED_NPC_LAMBERT_MAT,
 } from '../rendering/StorybookMaterial.ts';
 import {
   rbox,
@@ -24,9 +25,12 @@ import type { EnvironmentController } from '../environment/EnvironmentController
 
 export const NEUTRAL_PERCH_BIRD_COUNT = 10;
 export const RIVAL_INVADER_COUNT = 15;
+export const MAX_RIVAL_POOL = 20;
 export const MAX_KARMA_DEFENDERS = 12;
 export const DAY_DURATION_SECONDS = 90.0;
+export const INVASION_DURATION_SECONDS = 60.0;
 export const MAX_DAYS = 5;
+export const BEFRIEND_HOLD_SECONDS = 1.0;
 export const COURT_MIN_LEVEL = 5;
 export const COURT_SUCCESS_CHANCE = 0.2; // Exact 1-in-5 (20%) check
 export const BACKUP_DURATION_SECONDS = 45.0;
@@ -78,6 +82,8 @@ interface PerchBirdSlot {
   rig: BirdRigMeshes;
 }
 
+type RivalAttackState = 'flocking' | 'swooping' | 'retreating';
+
 interface RivalInvaderSlot {
   index: number;
   active: boolean;
@@ -85,10 +91,11 @@ interface RivalInvaderSlot {
   pos: THREE.Vector3;
   vel: THREE.Vector3;
   yaw: number;
-  orbitAngle: number;
-  orbitRadius: number;
-  orbitHeight: number;
-  fireCooldown: number;
+  attackState: RivalAttackState;
+  attackCooldown: number;
+  swoopTimer: number;
+  hasFiredInSwoop: boolean;
+  wanderPhase: number;
   muzzleTimer: number;
   flapPhase: number;
   rig: BirdRigMeshes;
@@ -156,6 +163,13 @@ const _desiredPos = new THREE.Vector3();
 const _toDesired = new THREE.Vector3();
 const _shootOrigin = new THREE.Vector3();
 const _shootDir = new THREE.Vector3();
+const _boidSep = new THREE.Vector3();
+const _boidAlign = new THREE.Vector3();
+const _boidCohes = new THREE.Vector3();
+const _boidSteer = new THREE.Vector3();
+const _boidDiff = new THREE.Vector3();
+const _flockAnchor = new THREE.Vector3();
+const _swoopTarget = new THREE.Vector3();
 
 const NEUTRAL_PLUMAGE_HEXES: readonly number[] = [
   PALETTE.birdBlueTit,
@@ -299,7 +313,7 @@ function intersectSegmentSphere(
  */
 export class AerialSocialAndDayManager {
   private readonly group = new THREE.Group();
-  private readonly birdMat: THREE.NodeMaterial;
+  private readonly birdMat: THREE.Material;
   private readonly bulletMatEnemy: THREE.MeshBasicNodeMaterial;
   private readonly bulletMatAlly: THREE.MeshBasicNodeMaterial;
   private readonly muzzleMat: THREE.MeshBasicNodeMaterial;
@@ -332,18 +346,27 @@ export class AerialSocialAndDayManager {
   private scoutFleeVel = new THREE.Vector3();
   private scoutKarmaCooldown = 0;
 
-  // Core Progression, Karma & 5-Day Cycle State
+  // Core Progression, Karma & 5-Day + Endless Survival Cycle State
   public level = 1;
   public xp = 0;
   public birdKarma = 0;
   public currentDay = 1;
   public dayElapsed = 0;
   public day5Triggered = false;
+  public day5SurvivedAwarded = false;
+  public invasionActive = false;
+  public invasionElapsed = 0;
+  public invasionWaveDay = 0;
+  private globalRivalSwoopCooldown = 0;
   public backupTimer = 0;
   public phoneOpen = false;
   public active = false;
   public readonly contacts: AerialContactEntry[] = [];
 
+  private holdingBefriendKey = false;
+  private befriendHoldTime = 0;
+  private befriendTriggeredDuringHold = false;
+  private nearNeutralBirdCached = false;
   private gunEquipped = false;
   private crumbDropCooldown = 0;
   private lastKnownBirdHp = 100;
@@ -352,6 +375,20 @@ export class AerialSocialAndDayManager {
   private activeDefenderCount = 0;
   private xpMultiplierFn: ((pos: THREE.Vector3) => number) | null = null;
   private toastTimer: number | null = null;
+  private hudRefreshAccum = 0.25;
+  private lastDayText = '';
+  private lastPhaseText = '';
+  private lastPhoneDayText = '';
+  private lastLevelText = '';
+  private lastXpPctStr = '';
+  private lastCourtVisible = false;
+  private lastCourtText = '';
+  private readonly bulletHitScratch: AerialBulletHitCandidate = {
+    kind: 'perch',
+    index: 0,
+    distance: 0,
+    point: new THREE.Vector3(),
+  };
 
   // DOM HUD & Bird Phone Elements
   private readonly topHudRoot: HTMLDivElement;
@@ -385,12 +422,17 @@ export class AerialSocialAndDayManager {
   ) {
     scene.add(this.group);
 
-    this.birdMat = createPastelMaterial({ vertexColors: true, rimStrength: 0.1 });
+    this.birdMat = SHARED_NPC_LAMBERT_MAT;
     this.bulletMatEnemy = createUnlitPastelFXMaterial(0xff5b3d);
     this.bulletMatAlly = createUnlitPastelFXMaterial(0x7be3ff);
     this.muzzleMat = createUnlitPastelFXMaterial(0xffe178);
     this.heartMat = createUnlitPastelFXMaterial(0xf5627c);
-    this.crumbMat = createPastelMaterial({ vertexColors: true, rimStrength: 0.05 });
+    this.crumbMat = createPastelMaterial({
+      vertexColors: true,
+      rimStrength: 0.08,
+      emissiveHex: 0xffc64d,
+      emissiveIntensity: 0.78,
+    });
 
     this.tinyPistolGeo = buildTinyPistolGeometry();
     this.sunglassesGeo = buildSunglassesGeometry();
@@ -465,8 +507,8 @@ export class AerialSocialAndDayManager {
     this.scoutRig.root.position.copy(this.scoutPos);
     this.scoutRig.root.visible = false;
 
-    // 3. Pre-allocate 15 Rival City Flock Invaders (Day 5)
-    for (let i = 0; i < RIVAL_INVADER_COUNT; i++) {
+    // 3. Pre-allocate Rival City Flock Invaders (Day 5 + Endless Waves)
+    for (let i = 0; i < MAX_RIVAL_POOL; i++) {
       const rig = this.createBirdRig(rivalBodyGeo, rivalWingLGeo, rivalWingRGeo, 1.22);
       rig.pistolGroup.visible = true;
       rig.root.visible = false;
@@ -477,10 +519,11 @@ export class AerialSocialAndDayManager {
         pos: new THREE.Vector3(),
         vel: new THREE.Vector3(),
         yaw: 0,
-        orbitAngle: (i / RIVAL_INVADER_COUNT) * Math.PI * 2,
-        orbitRadius: 16 + (i % 5) * 4.5,
-        orbitHeight: 4 + (i % 4) * 2.4,
-        fireCooldown: 1.0 + (i % 5) * 0.42,
+        attackState: 'flocking',
+        attackCooldown: 1.5 + (i % 7) * 0.95,
+        swoopTimer: 0,
+        hasFiredInSwoop: false,
+        wanderPhase: i * 1.17,
         muzzleTimer: 0,
         flapPhase: i * 0.65,
         rig,
@@ -526,7 +569,7 @@ export class AerialSocialAndDayManager {
     for (let i = 0; i < CRUMB_POOL_SIZE; i++) {
       const mesh = new THREE.Mesh(this.crumbGeo, this.crumbMat);
       mesh.visible = false;
-      mesh.castShadow = true;
+      mesh.castShadow = false;
       this.group.add(mesh);
       this.crumbs.push({
         active: false,
@@ -583,7 +626,7 @@ export class AerialSocialAndDayManager {
 
     this.courtPromptEl = document.createElement('div');
     this.courtPromptEl.className = 'aerial-court-prompt is-hidden';
-    this.courtPromptEl.textContent = '[F] Woo Bird (Lv 5+ · 20%)';
+    this.courtPromptEl.textContent = '[Hold E (1s) to Befriend]';
     parentContainer.appendChild(this.courtPromptEl);
 
     this.toastEl = document.createElement('div');
@@ -676,7 +719,7 @@ export class AerialSocialAndDayManager {
       })
     );
 
-    // 9. Keyboard Bindings ('F', 'P', 'Tab', 'C')
+    // 9. Keyboard Bindings ('E' hold 1s to befriend, 'P', 'Tab', 'C')
     window.addEventListener(
       'keydown',
       (e) => {
@@ -688,12 +731,49 @@ export class AerialSocialAndDayManager {
           }
           return;
         }
+        if (e.code === 'KeyE') {
+          if (!e.repeat) {
+            this.holdingBefriendKey = true;
+            this.befriendHoldTime = 0;
+            this.befriendTriggeredDuringHold = false;
+            if (this.nearNeutralBirdCached && this.currentDay < MAX_DAYS) {
+              this.befriendTriggeredDuringHold = true;
+              this.audio.playSparrowMicroChirp('idle');
+              this.showToast(
+                'Chirp! You can only make birdy friends after surviving Day 5!',
+                true,
+                2500
+              );
+            }
+          }
+          return;
+        }
         if (e.repeat) return;
-        if (e.code === 'KeyF') {
-          this.tryCourtNearbyBird();
-        } else if (e.code === 'KeyC') {
+        if (e.code === 'KeyC') {
           this.tryDropCrumbs();
         }
+      },
+      { signal: this.abortCtrl.signal }
+    );
+
+    window.addEventListener(
+      'keyup',
+      (e) => {
+        if (e.code === 'KeyE') {
+          this.holdingBefriendKey = false;
+          this.befriendHoldTime = 0;
+          this.befriendTriggeredDuringHold = false;
+        }
+      },
+      { signal: this.abortCtrl.signal }
+    );
+
+    window.addEventListener(
+      'blur',
+      () => {
+        this.holdingBefriendKey = false;
+        this.befriendHoldTime = 0;
+        this.befriendTriggeredDuringHold = false;
       },
       { signal: this.abortCtrl.signal }
     );
@@ -754,20 +834,20 @@ export class AerialSocialAndDayManager {
 
     const bodyGroup = new THREE.Group();
     const bodyMesh = new THREE.Mesh(bodyGeo, this.birdMat);
-    bodyMesh.castShadow = true;
+    bodyMesh.castShadow = false;
     bodyMesh.receiveShadow = true;
     bodyGroup.add(bodyMesh);
 
     const wingL = new THREE.Group();
     wingL.position.set(-0.14, 0.29, 0.02);
     const wingLMesh = new THREE.Mesh(wingLGeo, this.birdMat);
-    wingLMesh.castShadow = true;
+    wingLMesh.castShadow = false;
     wingL.add(wingLMesh);
 
     const wingR = new THREE.Group();
     wingR.position.set(0.14, 0.29, 0.02);
     const wingRMesh = new THREE.Mesh(wingRGeo, this.birdMat);
-    wingRMesh.castShadow = true;
+    wingRMesh.castShadow = false;
     wingR.add(wingRMesh);
 
     const pistolGroup = new THREE.Group();
@@ -814,6 +894,9 @@ export class AerialSocialAndDayManager {
       this.environment.setCyclePaused(true);
       this.refreshHudLabels();
     } else {
+      this.holdingBefriendKey = false;
+      this.befriendHoldTime = 0;
+      this.befriendTriggeredDuringHold = false;
       this.setPhoneOpen(false);
     }
   }
@@ -848,12 +931,7 @@ export class AerialSocialAndDayManager {
     this.level = 1 + Math.floor(this.xp / XP_PER_LEVEL);
     this.refreshHudLabels();
     if (this.level > prevLevel) {
-      this.showToast(
-        this.level >= COURT_MIN_LEVEL
-          ? `Bird Level ${this.level}! Press [F] near perch birds to woo!`
-          : `Bird Level Up! Lv ${this.level}`,
-        true
-      );
+      this.showToast(`Bird Level Up! Lv ${this.level}`, true);
       this.audio.playSparrowMicroChirp('perch');
     }
   }
@@ -889,7 +967,7 @@ export class AerialSocialAndDayManager {
     this.addKarma(10, 'Dropped Breadcrumbs');
   }
 
-  public tryCourtNearbyBird(): boolean {
+  public tryCourtNearbyBird(bypassDayCheck = false): boolean {
     let best: PerchBirdSlot | null = null;
     let bestDistSq = COURT_RANGE_SQ;
     for (let i = 0; i < this.perchBirds.length; i++) {
@@ -903,8 +981,13 @@ export class AerialSocialAndDayManager {
     }
     if (!best) return false;
 
-    if (this.level < COURT_MIN_LEVEL) {
-      this.showToast(`Need Bird Lv ${COURT_MIN_LEVEL}+ to woo! (Currently Lv ${this.level})`, false);
+    if (!bypassDayCheck && this.currentDay < MAX_DAYS) {
+      this.showToast(
+        'Chirp! You can only make birdy friends after surviving Day 5!',
+        true,
+        2500
+      );
+      this.audio.playSparrowMicroChirp('idle');
       return false;
     }
 
@@ -950,7 +1033,7 @@ export class AerialSocialAndDayManager {
 
   public activatePhoneBackup(): boolean {
     if (this.contacts.length === 0) {
-      this.showToast('No contacts yet! Woo a bird with [F] at Lv 5+.', false);
+      this.showToast('No contacts yet! From Day 5+, hold [E] (1s) near perched birds.', false);
       return false;
     }
     this.backupTimer = BACKUP_DURATION_SECONDS;
@@ -974,10 +1057,12 @@ export class AerialSocialAndDayManager {
     if (this.contacts.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'bird-phone-empty';
-      empty.textContent = 'No contacts yet. Reach Lv 5+ & press [F] near perched birds (20% chance).';
+      empty.textContent =
+        'No contacts yet. From Day 5+, fly near perched birds & hold [E] (1s) to befriend!';
       this.phoneContactsList.appendChild(empty);
       this.phoneCallBtn.disabled = true;
-      this.phoneStatusEl.textContent = 'Reach Lv 5+ to woo GF';
+      this.phoneStatusEl.textContent =
+        this.currentDay < MAX_DAYS ? 'Unlocks on Day 5+' : 'Hold [E] (1s) near birds';
       return;
     }
 
@@ -1008,18 +1093,44 @@ export class AerialSocialAndDayManager {
   }
 
   private refreshHudLabels(): void {
+    this.hudRefreshAccum = 0;
     const progress = Math.min(1, this.dayElapsed / DAY_DURATION_SECONDS);
-    const phaseLabel =
-      progress < 0.35 ? 'Morning' : progress < 0.72 ? 'Afternoon' : 'Sunset';
-    this.dayTextEl.textContent = `Day ${this.currentDay} / ${MAX_DAYS}`;
-    this.dayPhaseEl.textContent = phaseLabel;
-    this.phoneDayEl.textContent = `Day ${this.currentDay}`;
-    this.levelTextEl.textContent = `Bird Lv ${this.level}`;
+    let phaseLabel =
+      progress < 0.2 ? 'Dawn' : progress < 0.6 ? 'Midday' : progress < 0.82 ? 'Sunset' : 'Night';
+    if (this.invasionActive) {
+      const secsLeft = Math.max(0, Math.ceil(INVASION_DURATION_SECONDS - this.invasionElapsed));
+      phaseLabel = this.currentDay <= MAX_DAYS ? `Invasion · ${secsLeft}s` : `Wave · ${secsLeft}s`;
+    }
+    const nextDayText =
+      this.currentDay <= MAX_DAYS ? `Day ${this.currentDay} / ${MAX_DAYS}` : `Day ${this.currentDay} · Endless`;
+    if (nextDayText !== this.lastDayText) {
+      this.lastDayText = nextDayText;
+      this.dayTextEl.textContent = nextDayText;
+    }
+    if (phaseLabel !== this.lastPhaseText) {
+      this.lastPhaseText = phaseLabel;
+      this.dayPhaseEl.textContent = phaseLabel;
+    }
+    const nextPhoneDay =
+      this.currentDay <= MAX_DAYS ? `Day ${this.currentDay}` : `Day ${this.currentDay} ∞`;
+    if (nextPhoneDay !== this.lastPhoneDayText) {
+      this.lastPhoneDayText = nextPhoneDay;
+      this.phoneDayEl.textContent = nextPhoneDay;
+    }
+    const nextLevelText = `Bird Lv ${this.level}`;
+    if (nextLevelText !== this.lastLevelText) {
+      this.lastLevelText = nextLevelText;
+      this.levelTextEl.textContent = nextLevelText;
+    }
     const xpPct = Math.max(0, Math.min(100, this.xp % XP_PER_LEVEL));
-    this.xpFillEl.style.width = `${xpPct}%`;
+    const nextXpPctStr = `${xpPct}%`;
+    if (nextXpPctStr !== this.lastXpPctStr) {
+      this.lastXpPctStr = nextXpPctStr;
+      this.xpFillEl.style.width = nextXpPctStr;
+    }
   }
 
-  private showToast(msg: string, positive: boolean): void {
+  private showToast(msg: string, positive: boolean, durationMs = 3200): void {
     if (this.toastTimer !== null) {
       window.clearTimeout(this.toastTimer);
       this.toastTimer = null;
@@ -1030,7 +1141,7 @@ export class AerialSocialAndDayManager {
     this.toastTimer = window.setTimeout(() => {
       this.toastTimer = null;
       this.toastEl.classList.add('is-hidden');
-    }, 3200);
+    }, durationMs);
   }
 
   private spawnBullet(
@@ -1138,7 +1249,11 @@ export class AerialSocialAndDayManager {
       const d = intersectSegmentSphere(prevPos, nextPos, b.pos, BIRD_HIT_RADIUS_SQ, _hitPtScratch);
       if (d >= 0 && d < bestDist) {
         bestDist = d;
-        best = { kind: 'perch', index: i, distance: d, point: _hitPtScratch.clone() };
+        this.bulletHitScratch.kind = 'perch';
+        this.bulletHitScratch.index = i;
+        this.bulletHitScratch.distance = d;
+        this.bulletHitScratch.point.copy(_hitPtScratch);
+        best = this.bulletHitScratch;
       }
     }
 
@@ -1152,7 +1267,11 @@ export class AerialSocialAndDayManager {
       );
       if (d >= 0 && d < bestDist) {
         bestDist = d;
-        best = { kind: 'scout', index: 0, distance: d, point: _hitPtScratch.clone() };
+        this.bulletHitScratch.kind = 'scout';
+        this.bulletHitScratch.index = 0;
+        this.bulletHitScratch.distance = d;
+        this.bulletHitScratch.point.copy(_hitPtScratch);
+        best = this.bulletHitScratch;
       }
     }
 
@@ -1162,7 +1281,11 @@ export class AerialSocialAndDayManager {
       const d = intersectSegmentSphere(prevPos, nextPos, r.pos, BIRD_HIT_RADIUS_SQ, _hitPtScratch);
       if (d >= 0 && d < bestDist) {
         bestDist = d;
-        best = { kind: 'rival', index: i, distance: d, point: _hitPtScratch.clone() };
+        this.bulletHitScratch.kind = 'rival';
+        this.bulletHitScratch.index = i;
+        this.bulletHitScratch.distance = d;
+        this.bulletHitScratch.point.copy(_hitPtScratch);
+        best = this.bulletHitScratch;
       }
     }
 
@@ -1221,7 +1344,7 @@ export class AerialSocialAndDayManager {
 
     for (let i = 0; i < this.rivalInvaders.length; i++) {
       const r = this.rivalInvaders[i];
-      if (!r.active) continue;
+      if (!r.active || r.attackState === 'retreating') continue;
       const dSq = r.pos.distanceToSquared(fromPos);
       if (dSq < bestDistSq) {
         bestDistSq = dSq;
@@ -1256,30 +1379,54 @@ export class AerialSocialAndDayManager {
     this.audio.playSparrowMicroChirp('idle');
   }
 
-  private triggerDay5Invasion(): void {
-    if (this.day5Triggered) return;
-    this.day5Triggered = true;
+  private triggerInvasionWave(waveDay: number, count: number): void {
+    if (waveDay === 5 && this.day5Triggered) return;
+    if (waveDay === 5) {
+      this.day5Triggered = true;
+    }
 
     // Retire Day 4 Scout cleanly
     this.scoutFleeing = true;
     this.scoutFleeVel.set(-8, 9, 8);
 
-    // Spawn 15 armed Rival City Flock Invaders circling around central plaza & bird
-    for (let i = 0; i < RIVAL_INVADER_COUNT; i++) {
+    this.invasionActive = true;
+    this.invasionElapsed = 0;
+    this.invasionWaveDay = waveDay;
+    this.globalRivalSwoopCooldown = 0.9;
+
+    const spawnCount = Math.min(this.rivalInvaders.length, Math.max(1, count));
+    for (let i = 0; i < this.rivalInvaders.length; i++) {
       const r = this.rivalInvaders[i];
-      const ang = (i / RIVAL_INVADER_COUNT) * Math.PI * 2;
-      const rad = 26 + (i % 3) * 8;
+      if (i >= spawnCount) {
+        r.active = false;
+        r.rig.root.visible = false;
+        continue;
+      }
+      const ang = (i / spawnCount) * Math.PI * 2 + Math.random() * 0.45;
+      const rad = 28 + (i % 4) * 9 + Math.random() * 6;
       r.active = true;
       r.hp = 1;
-      r.orbitAngle = ang;
+      r.attackState = 'flocking';
+      r.hasFiredInSwoop = false;
+      r.swoopTimer = 0;
+      r.wanderPhase = i * 1.17 + Math.random() * 2.0;
       r.pos.set(
         this.lastBirdPos.x + Math.cos(ang) * rad,
-        Math.max(16, this.lastBirdPos.y + 8 + (i % 4) * 2.5),
+        Math.max(17, this.lastBirdPos.y + 9 + (i % 4) * 3.2),
         this.lastBirdPos.z + Math.sin(ang) * rad
       );
-      r.vel.set(0, 0, 0);
-      r.fireCooldown = 1.2 + (i % 5) * 0.45;
+      // Tangential + slight inward starting flock velocity
+      r.vel.set(
+        -Math.sin(ang) * 14 + (Math.random() - 0.5) * 4,
+        (Math.random() - 0.5) * 2.5,
+        Math.cos(ang) * 14 + (Math.random() - 0.5) * 4
+      );
+      r.yaw = Math.atan2(r.vel.x, r.vel.z);
+      // Staggered independent attack cooldowns so birds peel off one by one
+      r.attackCooldown = 1.2 + i * 0.85 + Math.random() * 1.4;
       r.rig.root.position.copy(r.pos);
+      r.rig.root.rotation.y = r.yaw;
+      r.rig.bodyGroup.rotation.set(0, 0, 0);
       r.rig.root.visible = true;
     }
 
@@ -1310,47 +1457,128 @@ export class AerialSocialAndDayManager {
     }
 
     this.audio.playRebellionAlert(true);
+    const waveLabel =
+      waveDay === 5
+        ? `DAY 5: RIVAL FLOCK INVASION (${spawnCount}) — Survive 60s!`
+        : `DAY ${waveDay} ENDLESS WAVE (${spawnCount}) — Defend the skies!`;
     this.showToast(
       this.activeDefenderCount > 0
-        ? `DAY 5: RIVAL FLOCK INVASION (15)! ${this.activeDefenderCount} Friendly Defenders arrive!`
-        : 'DAY 5: RIVAL FLOCK INVASION (15)! 0 Karma Defenders — Hold the skies!',
-      this.activeDefenderCount > 0
+        ? `${waveLabel} (${this.activeDefenderCount} Friendly Defenders)`
+        : waveLabel,
+      this.activeDefenderCount > 0,
+      3800
     );
   }
 
+  private completeInvasionWave(clearedAll: boolean): void {
+    if (!this.invasionActive) return;
+    this.invasionActive = false;
+
+    // Surviving rival birds peel off and fly away into the sky
+    for (let i = 0; i < this.rivalInvaders.length; i++) {
+      const r = this.rivalInvaders[i];
+      if (!r.active) continue;
+      r.attackState = 'retreating';
+      r.swoopTimer = 4.5;
+      const outX = r.pos.x - this.lastBirdPos.x;
+      const outZ = r.pos.z - this.lastBirdPos.z;
+      const outLen = Math.hypot(outX, outZ) || 1;
+      r.vel.set((outX / outLen) * 20, 16 + (i % 4) * 2.5, (outZ / outLen) * 20);
+    }
+
+    // Friendly karma defenders return home smoothly once the wave is repelled
+    for (let i = 0; i < this.karmaDefenders.length; i++) {
+      this.karmaDefenders[i].active = false;
+      this.karmaDefenders[i].rig.root.visible = false;
+    }
+
+    this.audio.playSparrowMicroChirp('takeoff');
+    if (this.invasionWaveDay <= MAX_DAYS && !this.day5SurvivedAwarded) {
+      this.day5SurvivedAwarded = true;
+      const bonusXp = clearedAll ? 300 : 250;
+      this.awardXp(bonusXp);
+      this.birdKarma = Math.max(-100, Math.min(120, this.birdKarma + 15));
+      this.renderContactsList();
+      this.showToast(
+        `Day 5 Survived! (+${bonusXp} XP Bonus) Hold [E] near perched birds to make friends!`,
+        true,
+        4200
+      );
+    } else {
+      const bonusXp = 200 + Math.max(0, this.invasionWaveDay - MAX_DAYS) * 50;
+      this.awardXp(bonusXp);
+      this.showToast(
+        `Day ${this.invasionWaveDay} Wave Survived! (+${bonusXp} XP Bonus)`,
+        true,
+        3600
+      );
+    }
+    this.refreshHudLabels();
+  }
+
   public update(
-    dt: number,
+    rawDt: number,
     elapsed: number,
     birdPos: THREE.Vector3,
     gunEquipped: boolean,
     camPos?: THREE.Vector3
   ): void {
+    const dt = Math.min(0.05, Math.max(0.0001, rawDt));
     this.lastBirdPos.copy(birdPos);
     this.gunEquipped = gunEquipped;
 
     if (this.crumbDropCooldown > 0) this.crumbDropCooldown = Math.max(0, this.crumbDropCooldown - dt);
     if (this.birdInvulnTimer > 0) this.birdInvulnTimer = Math.max(0, this.birdInvulnTimer - dt);
+    if (this.globalRivalSwoopCooldown > 0) {
+      this.globalRivalSwoopCooldown = Math.max(0, this.globalRivalSwoopCooldown - dt);
+    }
 
-    // 1. Advance 5-Day Cycle (90s per day, smooth day -> sunset lighting)
+    // 1. Advance Endless Day Cycle (90s per day, smooth day -> sunset lighting, Day 5 timed 60s + Endless Day 6+)
     if (this.active) {
       this.dayElapsed += dt;
+      let dayChanged = false;
       if (this.dayElapsed >= DAY_DURATION_SECONDS) {
-        if (this.currentDay < MAX_DAYS) {
-          this.dayElapsed -= DAY_DURATION_SECONDS;
-          this.currentDay += 1;
-          this.showToast(`Day ${this.currentDay} Dawn`, true);
-          if (this.currentDay === 4) {
-            this.triggerDay4Scout();
-          } else if (this.currentDay === 5) {
-            this.triggerDay5Invasion();
+        this.dayElapsed -= DAY_DURATION_SECONDS;
+        this.currentDay += 1;
+        dayChanged = true;
+        this.renderContactsList();
+
+        if (this.currentDay === 4) {
+          this.showToast('Day 4 Dawn', true);
+          this.triggerDay4Scout();
+        } else if (this.currentDay === 5) {
+          this.triggerInvasionWave(5, RIVAL_INVADER_COUNT);
+        } else if (this.currentDay > MAX_DAYS) {
+          if (this.invasionActive) {
+            this.completeInvasionWave(false);
           }
+          const endlessCount = Math.min(MAX_RIVAL_POOL, 12 + (this.currentDay - MAX_DAYS) * 2);
+          this.triggerInvasionWave(this.currentDay, endlessCount);
         } else {
-          this.dayElapsed = DAY_DURATION_SECONDS;
+          this.showToast(`Day ${this.currentDay} Dawn`, true);
         }
       }
+
+      if (this.invasionActive) {
+        this.invasionElapsed += dt;
+        let remainingRivals = 0;
+        for (let i = 0; i < this.rivalInvaders.length; i++) {
+          const r = this.rivalInvaders[i];
+          if (r.active && r.attackState !== 'retreating') {
+            remainingRivals++;
+          }
+        }
+        if (remainingRivals === 0 || this.invasionElapsed >= INVASION_DURATION_SECONDS) {
+          this.completeInvasionWave(remainingRivals === 0);
+        }
+      }
+
       const dayProg = Math.min(1, this.dayElapsed / DAY_DURATION_SECONDS);
-      this.environment.setTimeOfDay(0.14 + dayProg * 0.48);
-      this.refreshHudLabels();
+      this.environment.setTimeOfDay(dayProg);
+      this.hudRefreshAccum += dt;
+      if (dayChanged || this.hudRefreshAccum >= 0.25) {
+        this.refreshHudLabels();
+      }
     }
 
     // 2. Backup Timer Countdown
@@ -1489,15 +1717,39 @@ export class AerialSocialAndDayManager {
       }
     }
 
-    // Update contextual courtship prompt
-    if (this.active && nearNeutralPrompt) {
-      this.courtPromptEl.textContent =
-        this.level >= COURT_MIN_LEVEL
-          ? '[F] Woo Bird (20% GF/Ally · 80% Hostile)'
-          : `[F] Woo Bird (Unlocks at Lv ${COURT_MIN_LEVEL} · Now Lv ${this.level})`;
-      this.courtPromptEl.classList.remove('is-hidden');
-    } else {
-      this.courtPromptEl.classList.add('is-hidden');
+    // Update contextual Hold-'E' friendship prompt & progress (diff-checked so DOM is untouched on steady frames)
+    this.nearNeutralBirdCached = nearNeutralPrompt;
+    if (!nearNeutralPrompt) {
+      this.befriendHoldTime = 0;
+    } else if (
+      this.active &&
+      this.holdingBefriendKey &&
+      !this.befriendTriggeredDuringHold &&
+      this.currentDay >= MAX_DAYS
+    ) {
+      this.befriendHoldTime += dt;
+      if (this.befriendHoldTime >= BEFRIEND_HOLD_SECONDS) {
+        this.befriendHoldTime = 0;
+        this.befriendTriggeredDuringHold = true;
+        this.tryCourtNearbyBird(true);
+      }
+    }
+
+    const showCourtPrompt = this.active && nearNeutralPrompt;
+    if (showCourtPrompt) {
+      let nextCourtText = '[Hold E (1s) to Befriend]';
+      if (this.currentDay >= MAX_DAYS && this.holdingBefriendKey && this.befriendHoldTime > 0.04) {
+        const pct = Math.min(100, Math.round((this.befriendHoldTime / BEFRIEND_HOLD_SECONDS) * 100));
+        nextCourtText = `[Holding E... ${pct}%]`;
+      }
+      if (nextCourtText !== this.lastCourtText) {
+        this.lastCourtText = nextCourtText;
+        this.courtPromptEl.textContent = nextCourtText;
+      }
+    }
+    if (showCourtPrompt !== this.lastCourtVisible) {
+      this.lastCourtVisible = showCourtPrompt;
+      this.courtPromptEl.classList.toggle('is-hidden', !showCourtPrompt);
     }
 
     // 4. Day 4 Scout Pigeon in Sunglasses
@@ -1526,7 +1778,17 @@ export class AerialSocialAndDayManager {
       }
     }
 
-    // 5. Day 5 Rival City Flock Invaders (15)
+    // 5. Rival City Flock Invaders: Boids Steering + Staggered One-by-One Swoop Attacks
+    // Loose drifting airspace centroid above/around the player (no stiff circular ring or single-file conga line)
+    _flockAnchor.set(
+      birdPos.x + Math.sin(elapsed * 0.34) * 18.0,
+      Math.max(16.0, birdPos.y + 11.5 + Math.cos(elapsed * 0.52) * 3.5),
+      birdPos.z + Math.cos(elapsed * 0.29) * 18.0
+    );
+
+    const escalationBoost =
+      this.currentDay > MAX_DAYS ? Math.min(4.5, (this.currentDay - MAX_DAYS) * 0.85) : 0;
+
     for (let i = 0; i < this.rivalInvaders.length; i++) {
       const r = this.rivalInvaders[i];
       if (!r.active) continue;
@@ -1534,36 +1796,183 @@ export class AerialSocialAndDayManager {
         r.muzzleTimer -= dt;
         if (r.muzzleTimer <= 0) r.rig.muzzleFlash.visible = false;
       }
-      r.orbitAngle += dt * (0.95 + (i % 3) * 0.16);
-      _desiredPos.set(
-        birdPos.x + Math.cos(r.orbitAngle) * r.orbitRadius,
-        Math.max(9, birdPos.y + r.orbitHeight + Math.sin(elapsed * 1.8 + i) * 1.8),
-        birdPos.z + Math.sin(r.orbitAngle) * r.orbitRadius
-      );
-      _toDesired.subVectors(_desiredPos, r.pos);
-      r.pos.addScaledVector(_toDesired, Math.min(1, dt * 2.1));
-      r.yaw = Math.atan2(birdPos.x - r.pos.x, birdPos.z - r.pos.z);
+
+      if (r.attackState === 'retreating') {
+        r.swoopTimer -= dt;
+        r.vel.y = Math.min(24.0, r.vel.y + 12.0 * dt);
+        r.pos.addScaledVector(r.vel, dt);
+        r.yaw = Math.atan2(r.vel.x || 0.001, r.vel.z || 1);
+        r.rig.root.position.copy(r.pos);
+        r.rig.root.rotation.y = r.yaw;
+        r.rig.bodyGroup.rotation.set(-0.35, 0, 0);
+        const fastFlap = Math.sin(elapsed * 26 + r.flapPhase) * 0.78;
+        r.rig.wingL.rotation.z = fastFlap;
+        r.rig.wingR.rotation.z = -fastFlap;
+        if (r.pos.y > 155 || r.swoopTimer <= 0) {
+          r.active = false;
+          r.rig.root.visible = false;
+        }
+        continue;
+      }
+
+      // Compute lightweight Boids forces (separation, alignment, cohesion) against nearby flockmates
+      _boidSep.set(0, 0, 0);
+      _boidAlign.set(0, 0, 0);
+      _boidCohes.set(0, 0, 0);
+      let neighborCount = 0;
+
+      for (let j = 0; j < this.rivalInvaders.length; j++) {
+        if (i === j) continue;
+        const other = this.rivalInvaders[j];
+        if (!other.active || other.attackState === 'retreating') continue;
+
+        _boidDiff.subVectors(r.pos, other.pos);
+        const distSq = _boidDiff.lengthSq();
+        if (distSq > 0.0001 && distSq < 6.8 * 6.8) {
+          const dist = Math.sqrt(distSq);
+          const weight = (6.8 - dist) / 6.8;
+          _boidSep.addScaledVector(_boidDiff, weight / dist);
+        }
+        if (distSq < 20.0 * 20.0) {
+          _boidAlign.add(other.vel);
+          _boidCohes.add(other.pos);
+          neighborCount++;
+        }
+      }
+
+      _boidSteer.set(0, 0, 0);
+
+      if (r.attackState === 'flocking') {
+        r.attackCooldown -= dt;
+        if (r.attackCooldown <= 0 && this.globalRivalSwoopCooldown <= 0) {
+          // Peel off from the swarm individually to execute a swoop attack pass
+          r.attackState = 'swooping';
+          r.swoopTimer = 1.85;
+          r.hasFiredInSwoop = false;
+          this.globalRivalSwoopCooldown = Math.max(0.55, 1.05 - escalationBoost * 0.08);
+        }
+      }
+
+      if (r.attackState === 'swooping') {
+        r.swoopTimer -= dt;
+        // Dive on an offset intercept pass near Birdy rather than head-on stacking
+        const passOffX = Math.sin(r.wanderPhase + elapsed * 0.5) * 4.2;
+        const passOffZ = Math.cos(r.wanderPhase + elapsed * 0.5) * 4.2;
+        _swoopTarget.set(
+          birdPos.x + passOffX,
+          Math.max(4.8, birdPos.y + 1.1),
+          birdPos.z + passOffZ
+        );
+        _toDesired.subVectors(_swoopTarget, r.pos);
+        const distToTarget = _toDesired.length();
+        if (distToTarget > 0.01) {
+          _toDesired.divideScalar(distToTarget);
+          _boidSteer.addScaledVector(_toDesired, 36.0 + escalationBoost * 2.0);
+        }
+        // Keep mild personal separation even during swoops
+        _boidSteer.addScaledVector(_boidSep, 14.0);
+
+        if (!r.hasFiredInSwoop && r.swoopTimer <= 1.35 && distToTarget < 64.0) {
+          r.hasFiredInSwoop = true;
+          _shootOrigin.set(r.pos.x, r.pos.y + 0.25, r.pos.z);
+          _shootDir.subVectors(birdPos, _shootOrigin);
+          _shootDir.x += (Math.random() - 0.5) * 0.14;
+          _shootDir.y += (Math.random() - 0.5) * 0.11;
+          _shootDir.z += (Math.random() - 0.5) * 0.14;
+          _shootDir.normalize();
+          this.spawnBullet(_shootOrigin, _shootDir, ENEMY_BULLET_SPEED, 'enemy');
+          r.rig.muzzleFlash.visible = true;
+          r.muzzleTimer = 0.06;
+          this.audio.playGunshot(_shootOrigin);
+        }
+
+        if (r.swoopTimer <= 0 || distToTarget < 4.5) {
+          r.attackState = 'flocking';
+          r.vel.y = Math.max(r.vel.y + 4.5, 9.0);
+          r.attackCooldown =
+            Math.max(2.4, 4.4 - escalationBoost * 0.35) +
+            Math.random() * 4.2 +
+            (i % 4) * 0.65;
+        }
+      } else {
+        // Boids flocking steering: Separation + Alignment + Cohesion + General Airspace Drift
+        _boidSteer.addScaledVector(_boidSep, 30.0);
+
+        if (neighborCount > 0) {
+          const invN = 1 / neighborCount;
+          _boidAlign.multiplyScalar(invN);
+          const alignLen = _boidAlign.length();
+          if (alignLen > 0.01) {
+            _boidAlign.multiplyScalar((16.5 + escalationBoost) / alignLen).sub(r.vel);
+            _boidSteer.addScaledVector(_boidAlign, 1.35);
+          }
+
+          _boidCohes.multiplyScalar(invN).sub(r.pos);
+          const cohLen = _boidCohes.length();
+          if (cohLen > 0.01) {
+            _boidCohes.multiplyScalar(1 / cohLen);
+            _boidSteer.addScaledVector(_boidCohes, 8.5);
+          }
+        }
+
+        // Gentle guidance toward a personal drifting pocket in the player's general airspace
+        _desiredPos.set(
+          _flockAnchor.x + Math.cos(elapsed * 0.58 + r.wanderPhase) * 24.0,
+          _flockAnchor.y + Math.sin(elapsed * 1.15 + r.wanderPhase * 1.7) * 5.2,
+          _flockAnchor.z + Math.sin(elapsed * 0.51 + r.wanderPhase * 1.3) * 24.0
+        );
+        _toDesired.subVectors(_desiredPos, r.pos);
+        const homeDist = _toDesired.length();
+        if (homeDist > 0.01) {
+          const pullStrength = homeDist > 42.0 ? 24.0 : 12.0;
+          _boidSteer.addScaledVector(_toDesired, pullStrength / homeDist);
+        }
+      }
+
+      // Clamp steering acceleration & integrate velocity
+      const steerSq = _boidSteer.lengthSq();
+      const maxAccel = r.attackState === 'swooping' ? 46.0 : 32.0;
+      if (steerSq > maxAccel * maxAccel) {
+        _boidSteer.multiplyScalar(maxAccel / Math.sqrt(steerSq));
+      }
+      r.vel.addScaledVector(_boidSteer, dt);
+
+      const speedSq = r.vel.lengthSq();
+      const minSpd = 9.0;
+      const maxSpd = r.attackState === 'swooping' ? 27.0 + escalationBoost : 19.5 + escalationBoost;
+      if (speedSq < minSpd * minSpd && speedSq > 0.0001) {
+        r.vel.multiplyScalar(minSpd / Math.sqrt(speedSq));
+      } else if (speedSq > maxSpd * maxSpd) {
+        r.vel.multiplyScalar(maxSpd / Math.sqrt(speedSq));
+      }
+
+      r.pos.addScaledVector(r.vel, dt);
+      if (r.pos.y < 7.5) {
+        r.pos.y = 7.5;
+        if (r.vel.y < 2.0) r.vel.y = 4.0;
+      }
+
+      const targetYaw =
+        r.attackState === 'swooping'
+          ? Math.atan2(birdPos.x - r.pos.x, birdPos.z - r.pos.z)
+          : Math.atan2(r.vel.x || 0.001, r.vel.z || 1);
+      let dyaw = targetYaw - r.yaw;
+      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+      r.yaw += dyaw * Math.min(1, dt * 7.0);
+
       r.rig.root.position.copy(r.pos);
       r.rig.root.rotation.y = r.yaw;
+      // Natural aerodynamic bank & pitch tilt
+      const targetBank = Math.max(-0.55, Math.min(0.55, -dyaw * 0.45));
+      const targetPitch = Math.max(-0.48, Math.min(0.48, -r.vel.y * 0.032));
+      r.rig.bodyGroup.rotation.z += (targetBank - r.rig.bodyGroup.rotation.z) * Math.min(1, dt * 8.0);
+      r.rig.bodyGroup.rotation.x += (targetPitch - r.rig.bodyGroup.rotation.x) * Math.min(1, dt * 8.0);
 
-      const flap = Math.sin(elapsed * 19 + r.flapPhase) * 0.68;
+      const flapSpeed = r.attackState === 'swooping' ? 24 : 18.5;
+      const flap = Math.sin(elapsed * flapSpeed + r.flapPhase) * 0.68;
       r.rig.wingL.rotation.z = flap;
       r.rig.wingR.rotation.z = -flap;
-
-      r.fireCooldown -= dt;
-      if (r.fireCooldown <= 0 && r.pos.distanceToSquared(birdPos) < 68 * 68) {
-        r.fireCooldown = 1.9 + Math.random() * 0.85;
-        _shootOrigin.set(r.pos.x, r.pos.y + 0.25, r.pos.z);
-        _shootDir.subVectors(birdPos, _shootOrigin);
-        _shootDir.x += (Math.random() - 0.5) * 0.17;
-        _shootDir.y += (Math.random() - 0.5) * 0.14;
-        _shootDir.z += (Math.random() - 0.5) * 0.17;
-        _shootDir.normalize();
-        this.spawnBullet(_shootOrigin, _shootDir, ENEMY_BULLET_SPEED, 'enemy');
-        r.rig.muzzleFlash.visible = true;
-        r.muzzleTimer = 0.06;
-        this.audio.playGunshot(_shootOrigin);
-      }
     }
 
     // 6. Day 5 Friendly Karma Defenders (0-12)
@@ -1754,7 +2163,6 @@ export class AerialSocialAndDayManager {
     this.muzzleGeo.dispose();
     this.bulletGeo.dispose();
     this.crumbGeo.dispose();
-    this.birdMat.dispose();
     this.bulletMatEnemy.dispose();
     this.bulletMatAlly.dispose();
     this.muzzleMat.dispose();

@@ -66,7 +66,15 @@ canvas {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 20px;
+  gap: 18px;
+}
+
+.sparrow-hero-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 26px 2px;
 }
 
 .sparrow-progress {
@@ -76,20 +84,269 @@ canvas {
 }
 
 .sparrow-silhouette-base {
-  fill: rgba(58, 45, 36, 0.18);
-  stroke: rgba(58, 45, 36, 0.18);
+  fill: rgba(74, 49, 34, 0.16);
+  stroke: rgba(74, 49, 34, 0.18);
 }
 
 .sparrow-silhouette-fill {
-  fill: rgba(58, 45, 36, 0.88);
-  stroke: rgba(58, 45, 36, 0.88);
+  fill: #5c3a28;
+  stroke: #462a1c;
+}
+
+.sparrow-svg-body {
+  transform-origin: 125px 70px;
+  animation: sparrowIdleBob 2.6s ease-in-out infinite;
+}
+
+.sparrow-svg-wing {
+  transform-origin: 102px 58px;
+  animation: sparrowWingFlutter 1.8s ease-in-out infinite;
+}
+
+.sparrow-svg-head {
+  transform-origin: 162px 38px;
+  animation: sparrowHeadBob 2.6s ease-in-out infinite;
+}
+
+.sparrow-cute-details {
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.loading-screen.is-ready .sparrow-cute-details,
+.loading-screen.is-celebrating .sparrow-cute-details {
+  opacity: 1;
+}
+
+.sparrow-ambient-icons {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.loading-screen.is-ready .sparrow-ambient-icons {
+  opacity: 1;
+}
+
+.sparrow-float-icon {
+  position: absolute;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
+  animation: floatAmbientIcon 2.8s ease-in-out infinite;
+}
+
+.sparrow-float-icon.is-note-1 {
+  right: 22px;
+  top: 12px;
+  color: #c96c32;
+  animation-delay: 0s;
+}
+
+.sparrow-float-icon.is-heart-1 {
+  left: 26px;
+  top: 18px;
+  font-size: 14px;
+  color: #df6678;
+  animation-delay: 0.9s;
+}
+
+.sparrow-float-icon.is-note-2 {
+  right: 8px;
+  top: 34px;
+  font-size: 14px;
+  color: #d6932e;
+  animation-delay: 1.6s;
+}
+
+.sparrow-celebrate-burst {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.celebrate-icon {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  font-size: 18px;
+  font-weight: 900;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.4);
+}
+
+.celebrate-icon.c1 {
+  color: #eb5d75;
+  --tx: -52px;
+  --ty: -54px;
+}
+
+.celebrate-icon.c2 {
+  color: #f0ad32;
+  --tx: 56px;
+  --ty: -52px;
+}
+
+.celebrate-icon.c3 {
+  color: #c96c32;
+  --tx: 8px;
+  --ty: -68px;
+}
+
+.celebrate-icon.c4 {
+  color: #f7c348;
+  --tx: -24px;
+  --ty: -62px;
+}
+
+.celebrate-icon.c5 {
+  color: #eb5d75;
+  --tx: 38px;
+  --ty: -40px;
+}
+
+.loading-screen.is-celebrating .sparrow-ambient-icons {
+  opacity: 0;
+}
+
+.loading-screen.is-celebrating .sparrow-svg-body {
+  animation: sparrowHappyHop 0.48s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.loading-screen.is-celebrating .sparrow-svg-wing {
+  animation: sparrowWingFlapFast 0.16s ease-in-out infinite;
+}
+
+.loading-screen.is-celebrating .sparrow-svg-head {
+  animation: sparrowHappyChirpHead 0.35s ease-in-out infinite;
+}
+
+.loading-screen.is-celebrating .celebrate-icon {
+  animation: celebrateBurstUp 0.72s cubic-bezier(0.2, 0.85, 0.3, 1) forwards;
+}
+
+.loading-screen.is-celebrating .start-screen-card {
+  transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.44s ease;
+  transform: scale(1.03);
+}
+
+@keyframes sparrowIdleBob {
+  0%,
+  100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-4px) rotate(-1.2deg);
+  }
+}
+
+@keyframes sparrowHeadBob {
+  0%,
+  100% {
+    transform: rotate(0deg) translateY(0px);
+  }
+  35% {
+    transform: rotate(-4deg) translateY(-1.5px);
+  }
+  70% {
+    transform: rotate(3deg) translateY(1px);
+  }
+}
+
+@keyframes sparrowWingFlutter {
+  0%,
+  100% {
+    transform: rotate(0deg) scaleY(1);
+  }
+  20% {
+    transform: rotate(-10deg) scaleY(0.92);
+  }
+  35% {
+    transform: rotate(4deg) scaleY(1.04);
+  }
+  50% {
+    transform: rotate(-8deg) scaleY(0.94);
+  }
+  65% {
+    transform: rotate(0deg) scaleY(1);
+  }
+}
+
+@keyframes floatAmbientIcon {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.75) rotate(-6deg);
+  }
+  30% {
+    opacity: 0.92;
+  }
+  80% {
+    opacity: 0.65;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-18px) scale(1.06) rotate(8deg);
+  }
+}
+
+@keyframes sparrowHappyHop {
+  0% {
+    transform: translateY(0px) scale(1);
+  }
+  35% {
+    transform: translateY(-18px) rotate(-8deg) scale(1.06);
+  }
+  70% {
+    transform: translateY(-6px) rotate(4deg) scale(1.02);
+  }
+  100% {
+    transform: translateY(-14px) rotate(-6deg) scale(1.05);
+  }
+}
+
+@keyframes sparrowWingFlapFast {
+  0%,
+  100% {
+    transform: rotate(-22deg) scaleY(0.86);
+  }
+  50% {
+    transform: rotate(16deg) scaleY(1.08);
+  }
+}
+
+@keyframes sparrowHappyChirpHead {
+  0%,
+  100% {
+    transform: rotate(-7deg) translateY(-2px);
+  }
+  50% {
+    transform: rotate(4deg) translateY(0px);
+  }
+}
+
+@keyframes celebrateBurstUp {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.4);
+  }
+  25% {
+    opacity: 1;
+    transform: translate(calc(-50% + var(--tx) * 0.45), calc(-50% + var(--ty) * 0.45)) scale(1.18);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--tx)), calc(-50% + var(--ty))) scale(0.85);
+  }
 }
 
 .loading-status {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(58, 45, 36, 0.82);
+  color: rgba(58, 45, 36, 0.78);
 }
 
 .loading-status.is-error {
@@ -97,6 +354,7 @@ canvas {
   padding: 10px 16px;
   text-align: center;
   text-transform: none;
+  letter-spacing: normal;
   line-height: 1.45;
   color: #8f3926;
   background: rgba(252, 241, 232, 0.92);
@@ -111,41 +369,80 @@ canvas {
 
 .press-start-btn {
   appearance: none;
-  border: 2px solid rgba(58, 45, 36, 0.38);
-  background: rgba(253, 249, 240, 0.72);
-  color: #3a2d24;
-  padding: 10px 28px;
+  border: 2.5px solid #a6621c;
+  background: linear-gradient(180deg, #ffd978 0%, #f0ad38 100%);
+  color: #36210c;
+  padding: 13px 46px;
   border-radius: 999px;
   font-family: inherit;
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: pointer;
   touch-action: manipulation;
-  box-shadow: 0 4px 14px rgba(38, 28, 18, 0.1);
-  transition: transform 0.14s ease, background-color 0.14s ease, border-color 0.14s ease;
+  box-shadow: 0 5px 0 #b36b1e, 0 12px 24px rgba(58, 36, 14, 0.22);
+  transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease;
   animation: pressStartPulse 2.1s ease-in-out infinite;
 }
 
 .press-start-btn:hover,
 .press-start-btn:focus-visible {
   outline: none;
-  background: rgba(255, 252, 246, 0.96);
-  border-color: rgba(58, 45, 36, 0.68);
-  transform: translateY(-1px);
+  filter: brightness(1.06);
+  transform: translateY(-2px);
+  box-shadow: 0 7px 0 #b36b1e, 0 16px 28px rgba(58, 36, 14, 0.26);
 }
 
 .press-start-btn:active {
-  transform: translateY(1px);
+  transform: translateY(3px);
+  box-shadow: 0 2px 0 #b36b1e, 0 6px 12px rgba(58, 36, 14, 0.18);
 }
 
 @keyframes pressStartPulse {
   0%,
   100% {
-    opacity: 0.86;
+    transform: translateY(0px) scale(1);
   }
   50% {
+    transform: translateY(-1px) scale(1.025);
+  }
+}
+
+/* 1.0-Second Warm Golden-White Sunrise Bloom Transition */
+.sunrise-bloom-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  background: radial-gradient(
+    circle at 50% 45%,
+    #ffffff 0%,
+    #fff8de 36%,
+    #ffe096 72%,
+    #ffbe6b 100%
+  );
+}
+
+.sunrise-bloom-overlay.is-active {
+  visibility: visible;
+  animation: sunriseBloomTransition 1s cubic-bezier(0.35, 0, 0.25, 1) forwards;
+}
+
+@keyframes sunriseBloomTransition {
+  0% {
+    opacity: 0;
+  }
+  46% {
     opacity: 1;
+  }
+  60% {
+    opacity: 0.96;
+  }
+  100% {
+    opacity: 0;
   }
 }
 
@@ -1267,70 +1564,53 @@ canvas {
   color: #fffaf0;
 }
 
-/* Public Launch Start Screen ("SPARROW RAMPAGE") & Controls Legend */
+/* Public Launch Start Screen ("SPARROW RAMPAGE") — Clean Storybook Card */
 .start-screen-card {
-  width: min(460px, calc(100vw - 28px));
-  padding: 26px 24px 24px;
-  border-radius: 22px;
-  background: rgba(252, 246, 234, 0.94);
-  border: 2px solid rgba(68, 56, 46, 0.24);
-  box-shadow: 0 18px 42px rgba(24, 20, 16, 0.18);
-  gap: 14px;
-}
-
-.start-screen-badge {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #8c531e;
-  background: rgba(235, 220, 194, 0.72);
-  padding: 4px 11px;
-  border-radius: 999px;
-  border: 1px solid rgba(140, 83, 30, 0.25);
+  width: min(410px, calc(100vw - 28px));
+  padding: 30px 28px 28px;
+  border-radius: 26px;
+  background: rgba(253, 248, 237, 0.96);
+  border: 2.5px solid rgba(94, 71, 52, 0.28);
+  box-shadow: 0 22px 48px rgba(34, 24, 16, 0.16), 0 0 0 6px rgba(255, 246, 224, 0.55);
+  gap: 16px;
 }
 
 .start-screen-title {
-  font-size: clamp(24px, 5vw, 32px);
+  font-size: clamp(26px, 5.2vw, 34px);
   font-weight: 900;
   letter-spacing: 0.06em;
-  color: #2b221c;
+  color: #36271d;
   text-align: center;
-  line-height: 1.1;
+  line-height: 1.08;
+  text-shadow: 0 2px 0 rgba(235, 198, 134, 0.45);
 }
 
-.start-controls-legend {
-  width: 100%;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px 10px;
-  padding: 11px 12px;
-  border-radius: 14px;
-  background: rgba(239, 229, 209, 0.72);
-  border: 1.5px solid rgba(68, 56, 46, 0.16);
-}
-
-.start-control-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  font-size: 11.5px;
-  font-weight: 700;
-  color: #2f2823;
-}
-
-.start-control-item kbd {
-  padding: 2px 7px;
-  border-radius: 6px;
-  background: #fbf5e8;
-  border: 1px solid #cbbba0;
-  box-shadow: 0 2px 0 #b7a68b;
-  font-family: inherit;
-  font-size: 10.5px;
+/* Subtle Non-Intrusive Contextual Flight Hint (Auto-fades after 4s of flight) */
+.flight-hint-pill {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
+  transform: translateX(-50%) translateY(0);
+  z-index: 22;
+  pointer-events: none;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(251, 245, 232, 0.9);
+  color: #2e2620;
+  border: 1.5px solid rgba(94, 71, 52, 0.28);
+  box-shadow: 0 6px 16px rgba(18, 20, 30, 0.16);
+  font-size: 12px;
   font-weight: 800;
-  color: #29231e;
+  letter-spacing: 0.04em;
   white-space: nowrap;
+  opacity: 1;
+  transition: opacity 0.45s ease, transform 0.45s ease, visibility 0.45s ease;
+}
+
+.flight-hint-pill.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-50%) translateY(8px);
 }
 
 /* Game Over Overlay & Restart Button (0 HP) */
@@ -1521,4 +1801,46 @@ canvas {
   background: #3f9154;
   border-color: #2b6b3c;
   color: #fffaf0;
+}
+
+/* Cute 5-second auto-hide contextual starter speech bubble */
+.starter-speech-bubble {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 74px);
+  left: 50%;
+  transform: translate(-50%, 0) scale(1);
+  z-index: 26;
+  max-width: min(390px, calc(100vw - 32px));
+  padding: 11px 18px;
+  border-radius: 22px;
+  background: #fbf5e8;
+  color: #2c241d;
+  border: 2.5px solid #d49642;
+  box-shadow: 0 12px 26px rgba(24, 18, 12, 0.22);
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.42s ease, transform 0.42s cubic-bezier(0.22, 1, 0.36, 1), visibility 0.42s ease;
+}
+
+.starter-speech-bubble.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -10px) scale(0.95);
+}
+
+.starter-speech-tail {
+  position: absolute;
+  bottom: -9px;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  background: #fbf5e8;
+  border-right: 2.5px solid #d49642;
+  border-bottom: 2.5px solid #d49642;
+  transform: rotate(45deg);
 }

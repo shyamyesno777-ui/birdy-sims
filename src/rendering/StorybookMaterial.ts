@@ -35,6 +35,7 @@ import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { WORLD_CONFIG } from '../core/WorldConfig.ts';
 import { PALETTE } from './Palette.ts';
+import { getAsphaltRoadTexture, getSidewalkPlazaTexture } from './ProceduralTextures.ts';
 
 /**
  * Global shader uniforms shared across all storybook cel materials, sky dome,
@@ -218,6 +219,68 @@ export function createPastelMaterial(opts: PastelMaterialOptions = {}): THREE.No
   materialCache.set(key, mat);
   return mat;
 }
+
+/**
+ * Shared single MeshLambertMaterial instances across repeated trees, buildings, and NPC parts
+ * to minimize shader state switches and GPU fill-rate cost on low-end PCs.
+ */
+export const SHARED_TREE_LAMBERT_MAT = new THREE.MeshLambertMaterial({
+  vertexColors: true,
+});
+
+export const SHARED_BUILDING_LAMBERT_MAT = new THREE.MeshLambertMaterial({
+  vertexColors: true,
+});
+
+export const SHARED_NPC_LAMBERT_MAT = new THREE.MeshLambertMaterial({
+  vertexColors: true,
+});
+
+/**
+ * Stylized indie PBR road & plaza materials with crisp procedural CanvasTextures
+ * and sunlit specular reflection (roughness: 0.45, metalness: 0.1).
+ */
+export const SHARED_ASPHALT_ROAD_MAT = new THREE.MeshStandardMaterial({
+  map: getAsphaltRoadTexture(),
+  roughness: 0.45,
+  metalness: 0.1,
+  vertexColors: false,
+});
+
+export const SHARED_PLAZA_STONE_MAT = new THREE.MeshStandardMaterial({
+  map: getSidewalkPlazaTexture(),
+  roughness: 0.45,
+  metalness: 0.1,
+  vertexColors: true,
+});
+
+/**
+ * Shared warm emissive accent materials for streetlamp globes, lit townhouse windows,
+ * and glowing golden trophies.
+ */
+export const SHARED_LAMP_GLOW_MAT = new THREE.MeshStandardMaterial({
+  color: 0xfff0c4,
+  emissive: new THREE.Color(0xffc960),
+  emissiveIntensity: 1.45,
+  roughness: 0.25,
+  metalness: 0.05,
+});
+
+export const SHARED_WARM_WINDOW_MAT = new THREE.MeshStandardMaterial({
+  color: PALETTE.windowWarmLit,
+  emissive: new THREE.Color(0xffb84a),
+  emissiveIntensity: 0.92,
+  roughness: 0.22,
+  metalness: 0.1,
+});
+
+export const SHARED_GOLDEN_TROPHY_MAT = new THREE.MeshStandardMaterial({
+  color: 0xffd34d,
+  emissive: new THREE.Color(0xffa619),
+  emissiveIntensity: 0.85,
+  roughness: 0.22,
+  metalness: 0.82,
+});
 
 export interface BirdPlumageMaterialSpec {
   crown: number;
@@ -864,8 +927,8 @@ export function createStorybookRenderPipeline(
   aoPass.samples.value = isMobile ? 6 : 8;
   const aoTex = aoPass.getTextureNode();
 
-  // Subtle high-threshold selective bloom on desktop GPU so moon, lamps, sun & crown softly glow
-  const bloomPass = !isMobile ? bloom(sceneColor, 0.22, 0.42, 0.87) : null;
+  // Subtle high-threshold selective bloom on desktop GPU so lamps, windows, trophies & crumbs softly glow
+  const bloomPass = !isMobile ? bloom(sceneColor, 0.24, 0.45, 0.82) : null;
 
   const composite = Fn(() => {
     const uvCoord = screenUV;
@@ -914,18 +977,16 @@ export function createStorybookRenderPipeline(
       storybookUniforms.gradeTintColor
     );
 
-    // Gentle mid-tone gouache contrast + hyperbolic shoulder compression so whites stay creamy & detailed
-    const midContrast = max(vec3(0.0), vibrant.sub(0.42).mul(1.06).add(0.425));
-    const rolledOff = midContrast.div(vec3(1.0).add(midContrast.mul(0.17)));
-    const paperTinted = clamp(rolledOff.mul(1.09), 0.0, 0.96);
+    // Keep HDR headroom clean so renderer ACESFilmicToneMapping handles filmic highlight rolloff
+    const filmicReady = clamp(vibrant.mul(1.03), 0.0, 2.4);
 
     // Subtle atmospheric frame vignette (slightly deeper at night/rain)
     const centeredUV = uvCoord.sub(0.5).mul(vec2(1.15, 1.0));
     const vigDist = dot(centeredUV, centeredUV);
-    const vigAmount = float(0.26).add(storybookUniforms.nightFactor.mul(0.08));
-    const vig = float(1.0).sub(clamp(vigDist.mul(vigAmount), 0.0, 0.20));
+    const vigAmount = float(0.24).add(storybookUniforms.nightFactor.mul(0.08));
+    const vig = float(1.0).sub(clamp(vigDist.mul(vigAmount), 0.0, 0.18));
 
-    return vec4(paperTinted.mul(vig), base.a);
+    return vec4(filmicReady.mul(vig), base.a);
   });
 
   renderPipeline.outputNode = composite();

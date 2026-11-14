@@ -7,6 +7,10 @@ import {
   createStorybookRenderPipeline,
   storybookUniforms,
 } from './rendering/StorybookMaterial.ts';
+import {
+  disposeProceduralTextures,
+  getSkyEnvironmentTexture,
+} from './rendering/ProceduralTextures.ts';
 import { WorldFX } from './rendering/WorldFX.ts';
 import { PhysicsWorld } from './physics/PhysicsWorld.ts';
 import { PerchSystem } from './world/PerchSystem.ts';
@@ -57,9 +61,9 @@ function computeCappedDpr(
 ): number {
   if (isSoftwareGl) return 1;
   const pixelBudget = isMobile ? 1_250_000 : 2_350_000;
-  const maxDpr = 1.5;
+  const maxDpr = Math.min(window.devicePixelRatio || 1, 1.25);
   const maxDprByBudget = Math.sqrt(pixelBudget / Math.max(1, w * h));
-  const base = Math.max(1, Math.min(window.devicePixelRatio || 1, maxDpr, maxDprByBudget));
+  const base = Math.max(0.75, Math.min(maxDpr, maxDprByBudget));
   return Math.max(0.75, Math.min(maxDpr, base * qualityScale));
 }
 
@@ -74,14 +78,16 @@ export async function startGameApp(
   const initW = Math.max(1, window.innerWidth);
   const initH = Math.max(1, window.innerHeight);
   let isMobile = detectInitialMobileDevice();
+  const rawDpr = window.devicePixelRatio || 1;
 
   const renderer = new THREE.WebGPURenderer({
-    antialias: !isSoftwareGl,
+    antialias: !isSoftwareGl && rawDpr <= 1,
     powerPreference: 'high-performance',
   });
   renderer.setPixelRatio(computeCappedDpr(initW, initH, isMobile));
   renderer.setSize(initW, initH);
-  renderer.toneMappingExposure = 0.98;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
 
   renderer.shadowMap.enabled = !isSoftwareGl;
   renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -110,23 +116,29 @@ export async function startGameApp(
 
   await loadingScreen.advance(14);
 
-  // Morning scene + procedural TSL sky dome + light atmospheric haze
+  // Golden-hour scene + procedural TSL sky dome + seamless horizon FogExp2 + sky environment IBL
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(PALETTE.skyHorizonDawn);
-  scene.fog = new THREE.FogExp2(PALETTE.fogDawn, 0.00042);
+  scene.background = new THREE.Color(PALETTE.skyHorizonGolden);
+  scene.fog = new THREE.FogExp2(PALETTE.skyHorizonGolden, 0.00054);
+  try {
+    scene.environment = getSkyEnvironmentTexture();
+    scene.environmentIntensity = 0.42;
+  } catch {
+    // Fallback cleanly to hemisphere/directional lighting if environment texture fails
+  }
 
   const skyDome = createSkyDomeMesh();
   scene.add(skyDome);
 
-  // Sky-to-limestone hemisphere fill + directional sun with 3-cascade CSM shadows
-  const hemiLight = new THREE.HemisphereLight(PALETTE.skyMidDawn, PALETTE.plazaWarmStone, 0.56);
+  // Cool sky-blue / warm-ground hemisphere fill + warm golden-hour directional sun with CSM shadows
+  const hemiLight = new THREE.HemisphereLight(PALETTE.skyMidDay, PALETTE.plazaWarmStone, 0.62);
   scene.add(hemiLight);
 
-  const sunLight = new THREE.DirectionalLight(0xfff2da, 1.08);
+  const sunLight = new THREE.DirectionalLight(0xffe1a6, 1.18);
   sunLight.position.set(68, 118, 52);
   sunLight.target.position.set(0, 0, 0);
   sunLight.castShadow = !isSoftwareGl;
-  const shadowRes = isMobile ? 1024 : 2048;
+  const shadowRes = 1024;
   sunLight.shadow.mapSize.set(shadowRes, shadowRes);
   sunLight.shadow.camera.near = 0.5;
   sunLight.shadow.camera.far = 2400;
@@ -181,12 +193,6 @@ export async function startGameApp(
   const audio = new AcousticSoundtrack();
   const audioPreloadPromise = audio.preload();
   journalHud.onToggleMute = () => audio.toggleMute();
-  journalHud.onCycleTime = () => environment.advanceTimePhase();
-  journalHud.onCycleWeather = () => environment.cycleWeather();
-  journalHud.setTimePhase(environment.getTimePhase());
-  journalHud.setWeather(environment.getWeather());
-  events.on('environment:timeChanged', ({ phase }) => journalHud.setTimePhase(phase));
-  events.on('environment:weatherChanged', ({ weather }) => journalHud.setWeather(weather));
 
   const fx = new WorldFX(scene);
   const physics = new PhysicsWorld();
@@ -419,7 +425,8 @@ export async function startGameApp(
       renderPipeline = null;
     }
   }
-  renderer.toneMapping = renderPipeline ? THREE.NoToneMapping : THREE.NeutralToneMapping;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
 
   const renderSceneSafe = (): void => {
     if (renderPipeline) {
@@ -429,7 +436,7 @@ export async function startGameApp(
       } catch (err) {
         console.error('Storybook RenderPipeline error; falling back to direct renderer:', err);
         renderPipeline = null;
-        renderer.toneMapping = THREE.NeutralToneMapping;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
       }
     }
     try {
@@ -439,25 +446,27 @@ export async function startGameApp(
     }
   };
 
-  // Pre-warm all WebGPU pipelines (all 4 city quadrants, water shimmer, foliage sway, NPCs, pooled FX,
-  // prePass MRT, 4x MSAA scenePass, 3 CSM shadow cascades, GTAO & composite) + audio preload before showing START
+  // Pre-warm all WebGPU/WebGL pipelines (all 4 city quadrants, water shimmer, foliage sway, NPCs,
+  // pooled Bread Truck assets, pooled FX, CSM cascades, GTAO & composite) + audio preload before showing PLAY
   await loadingScreen.advance(97);
-  if (!isSoftwareGl) {
+  {
     const savedStates: Array<{ obj: THREE.Object3D; visible: boolean; frustumCulled: boolean }> = [];
     scene.traverse((obj) => {
       savedStates.push({ obj, visible: obj.visible, frustumCulled: obj.frustumCulled });
       obj.visible = true;
       obj.frustumCulled = false;
     });
+    breadCrash.setPrewarmMode(true, birdCam.camera);
     scene.updateMatrixWorld(true);
 
     try {
-      if (compilePassesAsync) {
-        await compilePassesAsync();
-      } else {
-        await renderer.compileAsync(scene, birdCam.camera);
+      await renderer.compile(scene, birdCam.camera);
+      if (!isSoftwareGl) {
+        if (compilePassesAsync) {
+          await compilePassesAsync();
+        }
+        renderSceneSafe();
       }
-      renderSceneSafe();
     } catch (err) {
       console.error('Shader pre-warm fallback:', err);
     } finally {
@@ -466,6 +475,7 @@ export async function startGameApp(
         s.obj.visible = s.visible;
         s.obj.frustumCulled = s.frustumCulled;
       }
+      breadCrash.setPrewarmMode(false);
     }
   }
 
@@ -507,6 +517,7 @@ export async function startGameApp(
     journalHud.dispose();
     combatHud.dispose();
     mobileControls.dispose();
+    disposeProceduralTextures();
     renderer.dispose();
   };
 
@@ -579,6 +590,16 @@ export async function startGameApp(
   const camFwdTmp = new THREE.Vector3();
   const camUpTmp = new THREE.Vector3();
 
+  const flightHintEl = document.getElementById('flight-hint-pill');
+  let flightHintShown = false;
+  let flightHintDone = false;
+  let flightHintTimer = 0;
+
+  loadingScreen.onStartTransition = () => {
+    wakeAudio();
+    audio.playSparrowMicroChirp('perch');
+  };
+
   void loadingScreen.waitForStart().then(() => {
     if (disposed) return;
     wakeAudio();
@@ -644,7 +665,7 @@ export async function startGameApp(
         fx.spawnWaterRipple(ripplePos, scale);
         audio.playWaterPlop(ripplePos);
       });
-      worldHandles.updateAnimatedProps(dt, elapsed);
+      worldHandles.updateAnimatedProps(dt, elapsed, birdCam.camera);
 
       // Indoor flag (camera + audio only). Lights stay constant across indoor/outdoor transitions:
       // changing light.visible invalidates the WebGPU LightsNode and recompiles all lit shaders.
@@ -655,6 +676,20 @@ export async function startGameApp(
         sparrow.setIntroLookTarget(birdCam.camera.position);
       }
       sparrow.update(dt, elapsed, birdCam.yaw);
+      if (!flightHintDone && sparrow.inputEnabled && sparrow.mode === 'flying' && flightHintEl) {
+        if (!flightHintShown) {
+          flightHintShown = true;
+          flightHintEl.textContent = isMobile
+            ? 'Drag & Double-Tap to Fly'
+            : 'WASD / Mouse to Fly';
+          flightHintEl.classList.remove('is-hidden');
+        }
+        flightHintTimer += dt;
+        if (flightHintTimer >= 4.0) {
+          flightHintDone = true;
+          flightHintEl.classList.add('is-hidden');
+        }
+      }
       sparrow.getForwardVector(fwdTmp);
       const stickState = sparrow.getMobileStick();
       const isMoving =

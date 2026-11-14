@@ -6,6 +6,7 @@ import type { WorldFX } from '../rendering/WorldFX.ts';
 import {
   createPastelMaterial,
   createUnlitPastelFXMaterial,
+  SHARED_NPC_LAMBERT_MAT,
 } from '../rendering/StorybookMaterial.ts';
 import {
   rbox,
@@ -193,7 +194,7 @@ export class BreadTruckCrashManager {
   private readonly truckMesh: THREE.Mesh;
   private readonly truckCollider: CANNON.Body;
   private readonly truckGeo: THREE.BufferGeometry;
-  private readonly sharedCelMat: THREE.NodeMaterial;
+  private readonly sharedCelMat: THREE.Material;
 
   private readonly loafGeo: THREE.BufferGeometry;
   private readonly loafMat: THREE.NodeMaterial;
@@ -242,12 +243,12 @@ export class BreadTruckCrashManager {
     this.fx = fx;
     this.awardXpFn = awardXpFn;
 
-    this.sharedCelMat = createPastelMaterial({ vertexColors: true, rimStrength: 0.08 });
+    this.sharedCelMat = SHARED_NPC_LAMBERT_MAT;
 
     // Tipped bakery truck mesh + parked off-screen kinematic collider
     this.truckGeo = buildTippedBakeryTruckGeometry();
     this.truckMesh = new THREE.Mesh(this.truckGeo, this.sharedCelMat);
-    this.truckMesh.castShadow = true;
+    this.truckMesh.castShadow = false;
     this.truckMesh.receiveShadow = true;
     // Tipped onto its left side (~59 deg)
     this.truckMesh.rotation.z = 1.03;
@@ -268,7 +269,7 @@ export class BreadTruckCrashManager {
     this.loafMat = createPastelMaterial({
       vertexColors: true,
       emissiveHex: 0xffc642,
-      emissiveIntensity: 0.62,
+      emissiveIntensity: 0.8,
       rimStrength: 0.16,
     });
     this.loafHaloGeo = new THREE.CircleGeometry(0.75, 12);
@@ -277,7 +278,7 @@ export class BreadTruckCrashManager {
 
     for (let i = 0; i < LOAF_COUNT; i++) {
       const mesh = new THREE.Mesh(this.loafGeo, this.loafMat);
-      mesh.castShadow = true;
+      mesh.castShadow = false;
       mesh.visible = false;
       mesh.position.set(0, -200, 0);
       this.scene.add(mesh);
@@ -307,7 +308,7 @@ export class BreadTruckCrashManager {
     for (let i = 0; i < SWARM_PIGEON_COUNT; i++) {
       const root = new THREE.Group();
       const body = new THREE.Mesh(this.pigeonBodyGeo, this.sharedCelMat);
-      body.castShadow = true;
+      body.castShadow = false;
       root.add(body);
 
       const wingL = new THREE.Mesh(this.pigeonWingLGeo, this.sharedCelMat);
@@ -386,6 +387,70 @@ export class BreadTruckCrashManager {
 
   public isActive(): boolean {
     return this.active;
+  }
+
+  /**
+   * Temporarily moves one instance of every pooled Bread Truck asset (tipped truck,
+   * golden loaf + halo, and swarming pigeon) into the active camera view during startup
+   * loading so `renderer.compile(scene, camera)` compiles all shaders beforehand.
+   */
+  public setPrewarmMode(prewarming: boolean, camera?: THREE.Camera): void {
+    if (this.active) return;
+    if (prewarming && camera) {
+      camera.getWorldDirection(this._tmpVec);
+      const px = camera.position.x + this._tmpVec.x * 12.0;
+      const py = camera.position.y + this._tmpVec.y * 12.0;
+      const pz = camera.position.z + this._tmpVec.z * 12.0;
+
+      this.truckRoot.position.set(px, py, pz);
+      this.truckRoot.visible = true;
+      this.truckRoot.traverse((child) => {
+        child.frustumCulled = false;
+      });
+
+      if (this.loaves.length > 0) {
+        const loaf = this.loaves[0];
+        loaf.mesh.position.set(px + 1.5, py, pz);
+        loaf.mesh.visible = true;
+        loaf.mesh.frustumCulled = false;
+        loaf.halo.position.set(px + 1.5, py - 0.1, pz);
+        loaf.halo.visible = true;
+        loaf.halo.frustumCulled = false;
+      }
+
+      if (this.pigeons.length > 0) {
+        const pig = this.pigeons[0];
+        pig.root.position.set(px - 1.5, py, pz);
+        pig.root.visible = true;
+        pig.root.traverse((child) => {
+          child.frustumCulled = false;
+        });
+      }
+      return;
+    }
+
+    this.truckRoot.visible = false;
+    this.truckRoot.position.set(0, -200, 0);
+    this.truckRoot.traverse((child) => {
+      child.frustumCulled = true;
+    });
+
+    for (let i = 0; i < this.loaves.length; i++) {
+      this.loaves[i].mesh.visible = false;
+      this.loaves[i].mesh.position.set(0, -200, 0);
+      this.loaves[i].mesh.frustumCulled = true;
+      this.loaves[i].halo.visible = false;
+      this.loaves[i].halo.position.set(0, -200, 0);
+      this.loaves[i].halo.frustumCulled = true;
+    }
+
+    for (let i = 0; i < this.pigeons.length; i++) {
+      this.pigeons[i].root.visible = false;
+      this.pigeons[i].root.position.set(0, -180, 0);
+      this.pigeons[i].root.traverse((child) => {
+        child.frustumCulled = true;
+      });
+    }
   }
 
   public getCooldownRemaining(): number {
@@ -509,12 +574,13 @@ export class BreadTruckCrashManager {
   }
 
   public update(
-    dt: number,
+    rawDt: number,
     elapsed: number,
     birdPos: THREE.Vector3,
     camPos?: THREE.Vector3
   ): void {
     if (!this.started) return;
+    const dt = Math.min(0.05, Math.max(0.0001, rawDt));
 
     if (!this.active) {
       this.cooldownTimer -= dt;

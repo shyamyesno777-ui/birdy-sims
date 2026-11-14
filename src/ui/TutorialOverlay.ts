@@ -77,6 +77,7 @@ function resolveMobileChips(prompt: TutorialPromptKey): MobileChipSpec[] | null 
 export class TutorialOverlay {
   private readonly root: HTMLDivElement;
   private readonly keyRow: HTMLDivElement;
+  private readonly parentEl: HTMLElement;
   private readonly abortCtrl = new AbortController();
 
   private requestedPrompt: TutorialPromptKey = null;
@@ -84,8 +85,12 @@ export class TutorialOverlay {
   private finished = false;
   private mobileMode = false;
   private activeKeyEls: Array<{ el: HTMLElement; codes: string[] }> = [];
+  private speechBubbleEl: HTMLDivElement | null = null;
+  private speechHideTimer: number | null = null;
+  private speechRemoveTimer: number | null = null;
 
   constructor(parent: HTMLElement) {
+    this.parentEl = parent;
     this.root = document.createElement('div');
     this.root.className = 'tutorial-overlay is-idle';
     this.root.setAttribute('aria-hidden', 'true');
@@ -250,6 +255,43 @@ export class TutorialOverlay {
     this.keyRow.classList.add('step-pop');
   }
 
+  public showStarterSpeechBubble(): void {
+    if (this.speechBubbleEl) return;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'starter-speech-bubble is-hidden';
+    bubble.setAttribute('role', 'status');
+    bubble.setAttribute('aria-live', 'polite');
+
+    const textEl = document.createElement('span');
+    textEl.className = 'starter-speech-text';
+    textEl.textContent = "Chirp! Land gently on a human's shoulder to be admired & heal~";
+
+    const tail = document.createElement('span');
+    tail.className = 'starter-speech-tail';
+    tail.setAttribute('aria-hidden', 'true');
+
+    bubble.appendChild(textEl);
+    bubble.appendChild(tail);
+    this.parentEl.appendChild(bubble);
+    this.speechBubbleEl = bubble;
+
+    // Force layout flush then animate cleanly in, staying non-blocking for 5 seconds
+    void bubble.offsetWidth;
+    bubble.classList.remove('is-hidden');
+
+    this.speechHideTimer = window.setTimeout(() => {
+      this.speechHideTimer = null;
+      if (!this.speechBubbleEl) return;
+      this.speechBubbleEl.classList.add('is-hidden');
+      this.speechRemoveTimer = window.setTimeout(() => {
+        this.speechRemoveTimer = null;
+        this.speechBubbleEl?.remove();
+        this.speechBubbleEl = null;
+      }, 450);
+    }, 5000);
+  }
+
   public complete(): void {
     if (this.finished) return;
     this.finished = true;
@@ -262,6 +304,16 @@ export class TutorialOverlay {
 
   public dispose(): void {
     this.abortCtrl.abort();
+    if (this.speechHideTimer !== null) {
+      window.clearTimeout(this.speechHideTimer);
+      this.speechHideTimer = null;
+    }
+    if (this.speechRemoveTimer !== null) {
+      window.clearTimeout(this.speechRemoveTimer);
+      this.speechRemoveTimer = null;
+    }
+    this.speechBubbleEl?.remove();
+    this.speechBubbleEl = null;
     this.activeKeyEls = [];
     this.root.remove();
   }

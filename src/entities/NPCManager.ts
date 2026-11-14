@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import type * as CANNON from 'cannon-es';
 import { PALETTE } from '../rendering/Palette.ts';
-import { createPastelMaterial } from '../rendering/StorybookMaterial.ts';
+import { SHARED_NPC_LAMBERT_MAT } from '../rendering/StorybookMaterial.ts';
 import {
   rbox,
   rcyl,
@@ -133,6 +133,9 @@ interface GiantHumanInstance {
   cachedSteerDir: THREE.Vector3;
   cachedSteerBlocked: boolean;
   hasCachedSteer: boolean;
+  stuckTimer: number;
+  stuckCheckX: number;
+  stuckCheckZ: number;
 }
 
 export interface CompanionBird {
@@ -229,11 +232,12 @@ const _pigeonFoodCandidates: InteractiveProp[] = [];
 const _snapGroundHit = createGroundRaycastHit();
 const _steerHit = createGroundRaycastHit();
 const _steer2dOut = { x: 0, z: 0, steerX: 0, steerZ: 0, collided: false };
+const _npcStuckNormalOut = { x: 0, z: 0 };
 const _humanGroundHit = createGroundRaycastHit();
 const _pigeonHit = createGroundRaycastHit();
 
 // --- Shared Cached Human Geometry & Material Registry ---
-let _sharedHumanMat: THREE.NodeMaterial | null = null;
+let _sharedHumanMat: THREE.Material | null = null;
 const _torsoGeoCache = new Map<string, THREE.BufferGeometry>();
 const _headGeoCache = new Map<string, THREE.BufferGeometry>();
 const _upperArmGeoCache = new Map<string, THREE.BufferGeometry>();
@@ -246,9 +250,9 @@ let _shoeGeo: THREE.BufferGeometry | null = null;
 let _eyeglassesGeo: THREE.BufferGeometry | null = null;
 let _guitarGeo: THREE.BufferGeometry | null = null;
 
-function getSharedHumanMaterial(): THREE.NodeMaterial {
+function getSharedHumanMaterial(): THREE.Material {
   if (!_sharedHumanMat) {
-    _sharedHumanMat = createPastelMaterial({ vertexColors: true, rimStrength: 0.08 });
+    _sharedHumanMat = SHARED_NPC_LAMBERT_MAT;
   }
   return _sharedHumanMat;
 }
@@ -817,7 +821,7 @@ function poseHumanLeg(leg: HumanLegRig, phi: number): void {
  */
 export class NPCManager {
   private group = new THREE.Group();
-  private mat: THREE.NodeMaterial;
+  private mat: THREE.Material;
   public humans: Map<string, GiantHumanInstance> = new Map();
   public companions: CompanionBird[] = [];
   private pigeons: ParkPigeon[] = [];
@@ -1122,7 +1126,7 @@ export class NPCManager {
       getCachedTorsoGeometry(cfg.coatHex, scarfHex, Boolean(cfg.apron)),
       this.mat
     );
-    torsoMesh.castShadow = true;
+    torsoMesh.castShadow = false;
     torsoMesh.receiveShadow = true;
     torsoPivot.add(torsoMesh);
 
@@ -1155,7 +1159,7 @@ export class NPCManager {
       getCachedHeadGeometry(cfg.skinHex, cfg.hairHex, hairStyle, hatStyle),
       this.mat
     );
-    headMesh.castShadow = true;
+    headMesh.castShadow = false;
     headMesh.receiveShadow = true;
     headPivot.add(headMesh);
 
@@ -1181,7 +1185,7 @@ export class NPCManager {
       guitarPivot.position.set(0.04, 1.4, 0.76);
       guitarPivot.rotation.set(-0.08, 0.15, 1.1);
       const guitarMesh = new THREE.Mesh(getCachedGuitarGeometry(), this.mat);
-      guitarMesh.castShadow = true;
+      guitarMesh.castShadow = false;
       guitarMesh.receiveShadow = true;
       guitarPivot.add(guitarMesh);
       torsoPivot.add(guitarPivot);
@@ -1279,6 +1283,9 @@ export class NPCManager {
       cachedSteerDir: new THREE.Vector3(Math.sin(cfg.yaw), 0, Math.cos(cfg.yaw)),
       cachedSteerBlocked: false,
       hasCachedSteer: false,
+      stuckTimer: 0,
+      stuckCheckX: spawnPos.x,
+      stuckCheckZ: spawnPos.z,
     };
 
     this.refreshHumanWorldAnchors(inst);
@@ -1403,7 +1410,7 @@ export class NPCManager {
     shoulder.position.set(side * 1.08, 3.04, 0.02);
 
     const upperMesh = new THREE.Mesh(getCachedUpperArmGeometry(side, sleeveHex), this.mat);
-    upperMesh.castShadow = true;
+    upperMesh.castShadow = false;
     shoulder.add(upperMesh);
 
     const elbow = new THREE.Group();
@@ -1412,7 +1419,7 @@ export class NPCManager {
 
     if (isGuitarist) {
       const sleeveMesh = new THREE.Mesh(getCachedGuitaristSleeveGeometry(sleeveHex), this.mat);
-      sleeveMesh.castShadow = true;
+      sleeveMesh.castShadow = false;
       elbow.add(sleeveMesh);
 
       const wrist = new THREE.Group();
@@ -1420,7 +1427,7 @@ export class NPCManager {
       elbow.add(wrist);
 
       const handMesh = new THREE.Mesh(getCachedGuitaristHandGeometry(side, skinHex), this.mat);
-      handMesh.castShadow = true;
+      handMesh.castShadow = false;
       wrist.add(handMesh);
 
       return { shoulder, elbow, wrist };
@@ -1430,7 +1437,7 @@ export class NPCManager {
       getCachedForeArmGeometry(side, sleeveHex, skinHex, heldProp),
       this.mat
     );
-    foreMesh.castShadow = true;
+    foreMesh.castShadow = false;
     elbow.add(foreMesh);
 
     return { shoulder, elbow };
@@ -1448,7 +1455,7 @@ export class NPCManager {
     hip.position.set(side * 0.46, hipY, seated ? 0.14 : 0);
 
     const thighMesh = new THREE.Mesh(getCachedThighGeometry(trouserHex), this.mat);
-    thighMesh.castShadow = true;
+    thighMesh.castShadow = false;
     hip.add(thighMesh);
 
     const knee = new THREE.Group();
@@ -1456,7 +1463,7 @@ export class NPCManager {
     hip.add(knee);
 
     const shinMesh = new THREE.Mesh(getCachedShinGeometry(trouserHex), this.mat);
-    shinMesh.castShadow = true;
+    shinMesh.castShadow = false;
     knee.add(shinMesh);
 
     const ankle = new THREE.Group();
@@ -1464,7 +1471,7 @@ export class NPCManager {
     knee.add(ankle);
 
     const shoeMesh = new THREE.Mesh(getCachedShoeGeometry(), this.mat);
-    shoeMesh.castShadow = true;
+    shoeMesh.castShadow = false;
     ankle.add(shoeMesh);
 
     if (seated) {
@@ -1530,7 +1537,7 @@ export class NPCManager {
     );
 
     const species = opts.species ?? 'sparrow';
-    const mesh = new SparrowMesh(species);
+    const mesh = new SparrowMesh(species, false);
     mesh.root.position.copy(snappedHome);
     this.group.add(mesh.root);
 
@@ -1590,7 +1597,7 @@ export class NPCManager {
         0.408
       );
 
-      const mesh = new SparrowMesh('pigeon');
+      const mesh = new SparrowMesh('pigeon', false);
       mesh.root.position.copy(home);
       mesh.root.rotation.y = ang + Math.PI * 0.6;
       this.group.add(mesh.root);
@@ -3074,7 +3081,14 @@ export class NPCManager {
             isActivelyWalking = true;
             const moveDir = h.cachedSteerDir;
             const walkSpeed = (h.config.walkSpeed ?? 3.85) * weatherWalkMul;
-            h.root.position.addScaledVector(moveDir, walkSpeed * clampedDt);
+            const stepMoveX = moveDir.x * walkSpeed * clampedDt;
+            const stepMoveZ = moveDir.z * walkSpeed * clampedDt;
+            const nextX = h.root.position.x + stepMoveX;
+            const nextZ = h.root.position.z + stepMoveZ;
+            if (!this.physics.isInNoWalkZone(nextX, nextZ, 0.7, false)) {
+              h.root.position.x = nextX;
+              h.root.position.z = nextZ;
+            }
             if (
               !playerIndoors &&
               (horizDistSq <= 55 * 55 || (this.frameCounter + h.steerFrameOffset) % 3 === 0)
@@ -3104,6 +3118,36 @@ export class NPCManager {
 
             this.syncHumanCollider(h);
 
+            // Lightweight stuckTimer recovery for walking story strollers (< 0.3 units over 1.5s)
+            const smdx = h.root.position.x - h.stuckCheckX;
+            const smdz = h.root.position.z - h.stuckCheckZ;
+            if (smdx * smdx + smdz * smdz >= 0.09) {
+              h.stuckTimer = 0;
+              h.stuckCheckX = h.root.position.x;
+              h.stuckCheckZ = h.root.position.z;
+            } else {
+              h.stuckTimer += clampedDt;
+              if (h.stuckTimer >= 1.5) {
+                h.stuckTimer = 0;
+                h.stuckCheckX = h.root.position.x;
+                h.stuckCheckZ = h.root.position.z;
+                const hasObs = this.physics.findNearestNoWalkNormal(
+                  h.root.position.x,
+                  h.root.position.z,
+                  16.0,
+                  _npcStuckNormalOut
+                );
+                const baseAngle = hasObs
+                  ? Math.atan2(_npcStuckNormalOut.x, _npcStuckNormalOut.z)
+                  : h.yaw + Math.PI;
+                const escAngle = baseAngle + (Math.random() - 0.5) * (Math.PI / 3);
+                h.yaw = escAngle;
+                h.root.rotation.y = h.yaw;
+                h.waypointIdx = (h.waypointIdx + 1) % wps.length;
+                h.hasCachedSteer = false;
+              }
+            }
+
             const desiredYaw = Math.atan2(moveDir.x, moveDir.z);
             let dY = desiredYaw - h.yaw;
             while (dY > Math.PI) dY -= Math.PI * 2;
@@ -3125,6 +3169,10 @@ export class NPCManager {
               }
             }
           }
+        } else {
+          h.stuckTimer = 0;
+          h.stuckCheckX = h.root.position.x;
+          h.stuckCheckZ = h.root.position.z;
         }
       }
 

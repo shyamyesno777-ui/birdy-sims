@@ -174,9 +174,12 @@ const _ripplePos = new THREE.Vector3();
 const _updraftPos = new THREE.Vector3();
 const _eulerQuat = new THREE.Quaternion();
 
+export type NoWalkZoneCategory = 'water' | 'bridge_edge' | 'building' | 'outer_wall';
+
 export type StaticObstacle2D =
   | {
       kind: 'circle';
+      category?: NoWalkZoneCategory;
       x: number;
       z: number;
       radius: number;
@@ -187,6 +190,7 @@ export type StaticObstacle2D =
     }
   | {
       kind: 'box';
+      category?: NoWalkZoneCategory;
       x: number;
       z: number;
       hx: number;
@@ -200,6 +204,7 @@ export type StaticObstacle2D =
     };
 
 const OBSTACLE_CELL_SIZE = 16;
+const OUTER_WALK_BOUND = WORLD_CONFIG.perimeterSoftMargin - 8.5; // 311.5 SU strictly inside ±316 SU perimeter facades
 function packCellKey(cx: number, cz: number): number {
   return ((cx + 512) << 12) | ((cz + 512) & 0xfff);
 }
@@ -234,6 +239,8 @@ export class PhysicsWorld {
   private readonly activeSquashTrampolines: TrampolineZone[] = [];
   private readonly obstacleCells = new Map<number, StaticObstacle2D[]>();
   private readonly staticObstacles: StaticObstacle2D[] = [];
+  private readonly noWalkCells = new Map<number, StaticObstacle2D[]>();
+  private readonly noWalkZones: StaticObstacle2D[] = [];
   private readonly preStepHandler: () => void;
 
   private rayFrom = new CANNON.Vec3();
@@ -358,8 +365,11 @@ export class PhysicsWorld {
       const absSin = Math.abs(sinYaw);
       const aabbHx = halfExtents.x * absCos + halfExtents.z * absSin;
       const aabbHz = halfExtents.x * absSin + halfExtents.z * absCos;
-      this.insertStaticObstacle2D({
+      const isBuildingFootprint =
+        topY >= 6.0 && (halfExtents.x >= 2.0 || halfExtents.z >= 2.0);
+      const obs: StaticObstacle2D = {
         kind: 'box',
+        category: isBuildingFootprint ? 'building' : undefined,
         x: center.x,
         z: center.z,
         hx: halfExtents.x,
@@ -370,7 +380,11 @@ export class PhysicsWorld {
         maxX: center.x + aabbHx,
         minZ: center.z - aabbHz,
         maxZ: center.z + aabbHz,
-      });
+      };
+      this.insertStaticObstacle2D(obs);
+      if (isBuildingFootprint) {
+        this.insertNoWalkZone2D(obs);
+      }
     }
     return body;
   }
@@ -397,8 +411,10 @@ export class PhysicsWorld {
     const topY = center.y + height * 0.5;
     const rad = Math.max(rTop, rBottom);
     if (bottomY < 2.2 && topY > 0.65 && height > 0.45 && rad > 0.12 && rad < 42) {
-      this.insertStaticObstacle2D({
+      const isBuildingFootprint = topY >= 6.0 && rad >= 2.2;
+      const obs: StaticObstacle2D = {
         kind: 'circle',
+        category: isBuildingFootprint ? 'building' : undefined,
         x: center.x,
         z: center.z,
         radius: rad,
@@ -406,7 +422,11 @@ export class PhysicsWorld {
         maxX: center.x + rad,
         minZ: center.z - rad,
         maxZ: center.z + rad,
-      });
+      };
+      this.insertStaticObstacle2D(obs);
+      if (isBuildingFootprint) {
+        this.insertNoWalkZone2D(obs);
+      }
     }
     return body;
   }
@@ -428,6 +448,309 @@ export class PhysicsWorld {
         bucket.push(obs);
       }
     }
+  }
+
+  private insertNoWalkZone2D(zone: StaticObstacle2D): void {
+    this.noWalkZones.push(zone);
+    const minCx = Math.floor(zone.minX / OBSTACLE_CELL_SIZE);
+    const maxCx = Math.floor(zone.maxX / OBSTACLE_CELL_SIZE);
+    const minCz = Math.floor(zone.minZ / OBSTACLE_CELL_SIZE);
+    const maxCz = Math.floor(zone.maxZ / OBSTACLE_CELL_SIZE);
+    for (let cx = minCx; cx <= maxCx; cx++) {
+      for (let cz = minCz; cz <= maxCz; cz++) {
+        const key = packCellKey(cx, cz);
+        let bucket = this.noWalkCells.get(key);
+        if (!bucket) {
+          bucket = [];
+          this.noWalkCells.set(key, bucket);
+        }
+        bucket.push(zone);
+      }
+    }
+  }
+
+  public registerNoWalkBox(
+    category: NoWalkZoneCategory,
+    centerX: number,
+    centerZ: number,
+    halfX: number,
+    halfZ: number,
+    yaw = 0,
+    alsoAddObstacle = true
+  ): void {
+    const cosYaw = Math.cos(yaw);
+    const sinYaw = Math.sin(yaw);
+    const absCos = Math.abs(cosYaw);
+    const absSin = Math.abs(sinYaw);
+    const aabbHx = halfX * absCos + halfZ * absSin;
+    const aabbHz = halfX * absSin + halfZ * absCos;
+    const zone: StaticObstacle2D = {
+      kind: 'box',
+      category,
+      x: centerX,
+      z: centerZ,
+      hx: halfX,
+      hz: halfZ,
+      cosYaw,
+      sinYaw,
+      minX: centerX - aabbHx,
+      maxX: centerX + aabbHx,
+      minZ: centerZ - aabbHz,
+      maxZ: centerZ + aabbHz,
+    };
+    this.insertNoWalkZone2D(zone);
+    if (alsoAddObstacle) {
+      this.insertStaticObstacle2D(zone);
+    }
+  }
+
+  public registerNoWalkCircle(
+    category: NoWalkZoneCategory,
+    centerX: number,
+    centerZ: number,
+    radius: number,
+    alsoAddObstacle = true
+  ): void {
+    const zone: StaticObstacle2D = {
+      kind: 'circle',
+      category,
+      x: centerX,
+      z: centerZ,
+      radius,
+      minX: centerX - radius,
+      maxX: centerX + radius,
+      minZ: centerZ - radius,
+      maxZ: centerZ + radius,
+    };
+    this.insertNoWalkZone2D(zone);
+    if (alsoAddObstacle) {
+      this.insertStaticObstacle2D(zone);
+    }
+  }
+
+  private static shapeOverlapsCircle2D(
+    o: StaticObstacle2D,
+    x: number,
+    z: number,
+    radius: number
+  ): boolean {
+    if (
+      x + radius < o.minX ||
+      x - radius > o.maxX ||
+      z + radius < o.minZ ||
+      z - radius > o.maxZ
+    ) {
+      return false;
+    }
+    if (o.kind === 'circle') {
+      const dx = x - o.x;
+      const dz = z - o.z;
+      const sumR = o.radius + radius;
+      return dx * dx + dz * dz < sumR * sumR;
+    }
+    const dx = x - o.x;
+    const dz = z - o.z;
+    const lx = dx * o.cosYaw - dz * o.sinYaw;
+    const lz = dx * o.sinYaw + dz * o.cosYaw;
+    const cxLocal = Math.max(-o.hx, Math.min(o.hx, lx));
+    const czLocal = Math.max(-o.hz, Math.min(o.hz, lz));
+    const ex = lx - cxLocal;
+    const ez = lz - czLocal;
+    return ex * ex + ez * ez < radius * radius;
+  }
+
+  /**
+   * Checks strict No-Walk Zones (water, bridge edges, buildings, outer map walls).
+   * When `includeAllStaticObstacles` is true, also rejects points overlapping trees/benches/props.
+   */
+  public isInNoWalkZone(
+    x: number,
+    z: number,
+    radius = 0.75,
+    includeAllStaticObstacles = false
+  ): boolean {
+    if (
+      Math.abs(x) >= OUTER_WALK_BOUND - radius ||
+      Math.abs(z) >= OUTER_WALK_BOUND - radius
+    ) {
+      return true;
+    }
+
+    const minCx = Math.floor((x - radius) / OBSTACLE_CELL_SIZE);
+    const maxCx = Math.floor((x + radius) / OBSTACLE_CELL_SIZE);
+    const minCz = Math.floor((z - radius) / OBSTACLE_CELL_SIZE);
+    const maxCz = Math.floor((z + radius) / OBSTACLE_CELL_SIZE);
+
+    for (let cx = minCx; cx <= maxCx; cx++) {
+      for (let cz = minCz; cz <= maxCz; cz++) {
+        const key = packCellKey(cx, cz);
+        const nwBucket = this.noWalkCells.get(key);
+        if (nwBucket) {
+          for (let i = 0; i < nwBucket.length; i++) {
+            if (PhysicsWorld.shapeOverlapsCircle2D(nwBucket[i], x, z, radius)) {
+              return true;
+            }
+          }
+        }
+        if (includeAllStaticObstacles) {
+          const obsBucket = this.obstacleCells.get(key);
+          if (obsBucket) {
+            for (let i = 0; i < obsBucket.length; i++) {
+              if (PhysicsWorld.shapeOverlapsCircle2D(obsBucket[i], x, z, radius)) {
+                return true;
+              }
+            }
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  public isSegmentBlockedByNoWalkZone(
+    x1: number,
+    z1: number,
+    x2: number,
+    z2: number,
+    radius = 0.72
+  ): boolean {
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    const steps = Math.max(3, Math.ceil(len / 4.0));
+    for (let s = 1; s < steps; s++) {
+      const t = s / steps;
+      const sx = x1 + (x2 - x1) * t;
+      const sz = z1 + (z2 - z1) * t;
+      if (this.isInNoWalkZone(sx, sz, radius, false)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Computes a zero-allocation 2D outward unit normal pointing directly away from the nearest
+   * obstacle, water zone, bridge edge, building, or outer map wall within `maxRange`.
+   */
+  public findNearestNoWalkNormal(
+    x: number,
+    z: number,
+    maxRange: number,
+    out: { x: number; z: number }
+  ): boolean {
+    let bestDist = maxRange;
+    let bestNx = 0;
+    let bestNz = 0;
+    let found = false;
+
+    // Check outer perimeter walls
+    const dPosX = OUTER_WALK_BOUND - x;
+    if (dPosX < bestDist) {
+      bestDist = dPosX;
+      bestNx = -1;
+      bestNz = 0;
+      found = true;
+    }
+    const dNegX = x + OUTER_WALK_BOUND;
+    if (dNegX < bestDist) {
+      bestDist = dNegX;
+      bestNx = 1;
+      bestNz = 0;
+      found = true;
+    }
+    const dPosZ = OUTER_WALK_BOUND - z;
+    if (dPosZ < bestDist) {
+      bestDist = dPosZ;
+      bestNx = 0;
+      bestNz = -1;
+      found = true;
+    }
+    const dNegZ = z + OUTER_WALK_BOUND;
+    if (dNegZ < bestDist) {
+      bestDist = dNegZ;
+      bestNx = 0;
+      bestNz = 1;
+      found = true;
+    }
+
+    const minCx = Math.floor((x - maxRange) / OBSTACLE_CELL_SIZE);
+    const maxCx = Math.floor((x + maxRange) / OBSTACLE_CELL_SIZE);
+    const minCz = Math.floor((z - maxRange) / OBSTACLE_CELL_SIZE);
+    const maxCz = Math.floor((z + maxRange) / OBSTACLE_CELL_SIZE);
+
+    for (let cx = minCx; cx <= maxCx; cx++) {
+      for (let cz = minCz; cz <= maxCz; cz++) {
+        const key = packCellKey(cx, cz);
+        const bucket = this.obstacleCells.get(key);
+        if (!bucket) continue;
+        for (let i = 0; i < bucket.length; i++) {
+          const o = bucket[i];
+          if (
+            x + maxRange < o.minX ||
+            x - maxRange > o.maxX ||
+            z + maxRange < o.minZ ||
+            z - maxRange > o.maxZ
+          ) {
+            continue;
+          }
+
+          let nx = 0;
+          let nz = 0;
+          let dist = Infinity;
+          if (o.kind === 'circle') {
+            const dx = x - o.x;
+            const dz = z - o.z;
+            const centerDist = Math.hypot(dx, dz);
+            dist = centerDist - o.radius;
+            if (centerDist > 1e-4) {
+              nx = dx / centerDist;
+              nz = dz / centerDist;
+            } else {
+              nx = 1;
+              nz = 0;
+            }
+          } else {
+            const dx = x - o.x;
+            const dz = z - o.z;
+            const lx = dx * o.cosYaw - dz * o.sinYaw;
+            const lz = dx * o.sinYaw + dz * o.cosYaw;
+            const cxLocal = Math.max(-o.hx, Math.min(o.hx, lx));
+            const czLocal = Math.max(-o.hz, Math.min(o.hz, lz));
+            const ex = lx - cxLocal;
+            const ez = lz - czLocal;
+            const edgeDist = Math.hypot(ex, ez);
+            if (edgeDist > 1e-4) {
+              dist = edgeDist;
+              const lnx = ex / edgeDist;
+              const lnz = ez / edgeDist;
+              nx = lnx * o.cosYaw + lnz * o.sinYaw;
+              nz = -lnx * o.sinYaw + lnz * o.cosYaw;
+            } else {
+              const penX = o.hx - Math.abs(lx);
+              const penZ = o.hz - Math.abs(lz);
+              const lnx = penX < penZ ? (lx >= 0 ? 1 : -1) : 0;
+              const lnz = penX < penZ ? 0 : (lz >= 0 ? 1 : -1);
+              dist = -Math.min(penX, penZ);
+              nx = lnx * o.cosYaw + lnz * o.sinYaw;
+              nz = -lnx * o.sinYaw + lnz * o.cosYaw;
+            }
+          }
+
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestNx = nx;
+            bestNz = nz;
+            found = true;
+          }
+        }
+      }
+    }
+
+    if (found) {
+      out.x = bestNx;
+      out.z = bestNz;
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -688,6 +1011,29 @@ export class PhysicsWorld {
 
   public registerBasin(basin: LiquidBasin): LiquidBasin {
     this.basins.push(basin);
+    // Register ground-level water basins & canal borders as strict No-Walk Zones and 2D steering obstacles
+    if (basin.surfaceY < 4.0) {
+      const margin = 1.65;
+      if (basin.boxHalfX !== undefined && basin.boxHalfZ !== undefined) {
+        this.registerNoWalkBox(
+          'water',
+          basin.center.x,
+          basin.center.z,
+          basin.boxHalfX + margin,
+          basin.boxHalfZ + margin,
+          0,
+          true
+        );
+      } else {
+        this.registerNoWalkCircle(
+          'water',
+          basin.center.x,
+          basin.center.z,
+          basin.radius + margin,
+          true
+        );
+      }
+    }
     return basin;
   }
 
@@ -1563,7 +1909,7 @@ export class PhysicsWorld {
           !Number.isFinite(bQuat.z) ||
           !Number.isFinite(bQuat.w) ||
           bPos.y < minFailSafeY ||
-          bPos.y > 240.0 ||
+          bPos.y > 280.0 ||
           Math.abs(bPos.x) > halfExtent ||
           Math.abs(bPos.z) > halfExtent
         ) {
@@ -1668,5 +2014,7 @@ export class PhysicsWorld {
     this.peckSwitches.length = 0;
     this.obstacleCells.clear();
     this.staticObstacles.length = 0;
+    this.noWalkCells.clear();
+    this.noWalkZones.length = 0;
   }
 }

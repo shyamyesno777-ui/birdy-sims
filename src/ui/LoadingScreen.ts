@@ -11,10 +11,14 @@ export class LoadingScreen {
   private readonly fillRect: SVGRectElement | null;
   private readonly statusEl: HTMLElement | null;
   private readonly startBtn: HTMLButtonElement | null;
+  private readonly bloomOverlay: HTMLElement | null;
+
+  public onStartTransition?: () => void;
 
   private targetProgress = 0;
   private visualProgress = 0;
   private started = false;
+  private transitioning = false;
   private hasError = false;
   private rafId = 0;
   private lastTickMs = 0;
@@ -25,6 +29,7 @@ export class LoadingScreen {
     this.fillRect = document.getElementById('sparrow-fill-rect') as SVGRectElement | null;
     this.statusEl = document.getElementById('loading-status');
     this.startBtn = document.getElementById('press-start-btn') as HTMLButtonElement | null;
+    this.bloomOverlay = document.getElementById('sunrise-bloom-overlay');
     document.body.dataset.state = 'title';
     this.applyVisualFill(0);
   }
@@ -136,6 +141,9 @@ export class LoadingScreen {
       window.requestAnimationFrame(poll);
     });
 
+    if (this.root) {
+      this.root.classList.add('is-ready');
+    }
     if (this.statusEl) {
       this.statusEl.classList.add('is-hidden');
     }
@@ -146,14 +154,44 @@ export class LoadingScreen {
 
     await new Promise<void>((resolve) => {
       const triggerStart = (e?: Event) => {
-        if (this.started) return;
+        if (this.started || this.transitioning) return;
+        this.transitioning = true;
         if (e) {
           e.preventDefault();
           e.stopPropagation();
         }
         cleanup();
-        this.dismiss();
-        resolve();
+
+        // 1. Trigger excited happy chirp + bird hop celebration + 1.0s sunrise bloom
+        try {
+          this.onStartTransition?.();
+        } catch {
+          // Ignore audio unlock timing quirks
+        }
+
+        if (this.startBtn) {
+          this.startBtn.disabled = true;
+        }
+        if (this.root) {
+          this.root.classList.add('is-celebrating');
+        }
+        if (this.bloomOverlay) {
+          this.bloomOverlay.classList.add('is-active');
+        }
+
+        // At peak golden-white sunrise bloom (~480ms), swap seamlessly into the live 3D world
+        window.setTimeout(() => {
+          this.dismiss();
+          resolve();
+        }, 480);
+
+        // Clean up bloom overlay right as the 1.0-second dissolve completes
+        window.setTimeout(() => {
+          if (this.bloomOverlay) {
+            this.bloomOverlay.classList.remove('is-active');
+            this.bloomOverlay.style.display = 'none';
+          }
+        }, 1050);
       };
 
       const onKeyDown = (e: KeyboardEvent) => {

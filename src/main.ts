@@ -1,5 +1,32 @@
 import { LoadingScreen } from './ui/LoadingScreen.ts';
 
+function ensureWritableWindowFetch(): void {
+  try {
+    const desc =
+      Object.getOwnPropertyDescriptor(window, 'fetch') ??
+      Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+    if (desc && desc.get && !desc.set && desc.configurable !== false) {
+      let currentFetch = desc.get.call(window) as typeof window.fetch;
+      Object.defineProperty(window, 'fetch', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return currentFetch;
+        },
+        set(next: typeof window.fetch) {
+          if (typeof next === 'function') {
+            currentFetch = next;
+          }
+        },
+      });
+    }
+  } catch {
+    // Ignore if environment locks window.fetch descriptor
+  }
+}
+
+ensureWritableWindowFetch();
+
 function isExternalExtensionError(filename?: string, message?: string, stack?: string): boolean {
   const combined = `${filename ?? ''} ${message ?? ''} ${stack ?? ''}`;
   return (

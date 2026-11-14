@@ -1045,7 +1045,7 @@ export class SparrowMesh {
   private gunRecoilTimer = 0;
   private muzzleFlashTimer = 0;
 
-  constructor(species: BirdSpecies) {
+  constructor(species: BirdSpecies, castShadows = true) {
     this.palette = resolveSpeciesPalette(species);
     const pal = this.palette;
     const assets = getOrBuildSpeciesAssets(pal, species);
@@ -1055,7 +1055,7 @@ export class SparrowMesh {
 
     // 1. Torso (per-pixel TSL plumage shader)
     this.bodyMesh = new THREE.Mesh(assets.bodyGeo, assets.torsoMat);
-    this.bodyMesh.castShadow = true;
+    this.bodyMesh.castShadow = castShadows;
     this.bodyMesh.receiveShadow = true;
     this.bodyPivot.add(this.bodyMesh);
 
@@ -1066,7 +1066,7 @@ export class SparrowMesh {
     this.bodyPivot.add(this.headPivot);
 
     const headMesh = new THREE.Mesh(assets.headGeo, assets.headMat);
-    headMesh.castShadow = true;
+    headMesh.castShadow = castShadows;
     headMesh.receiveShadow = true;
     this.headPivot.add(headMesh);
 
@@ -1082,7 +1082,7 @@ export class SparrowMesh {
     this.headPivot.add(this.upperBeakPivot, this.lowerBeakPivot);
 
     const upperBeakMesh = new THREE.Mesh(assets.upperBeakGeo, this.mat);
-    upperBeakMesh.castShadow = true;
+    upperBeakMesh.castShadow = castShadows;
     const lowerBeakMesh = new THREE.Mesh(assets.lowerBeakGeo, this.mat);
     lowerBeakMesh.castShadow = false;
     this.upperBeakPivot.add(upperBeakMesh);
@@ -1095,7 +1095,7 @@ export class SparrowMesh {
     if (species === 'sparrow') {
       const crownAssets = getOrBuildRoyalCrownAssets();
       const crownMesh = new THREE.Mesh(crownAssets.geo, crownAssets.mat);
-      crownMesh.castShadow = true;
+      crownMesh.castShadow = castShadows;
       crownMesh.receiveShadow = false;
       this.crownGroup.position.set(0, 0.150 * hs, -0.006 * hs);
       this.crownGroup.rotation.set(0.085, 0, 0);
@@ -1111,11 +1111,11 @@ export class SparrowMesh {
 
       this.gunMount.add(this.gunPivot);
       const frameMesh = new THREE.Mesh(pistolAssets.frameGeo, pistolAssets.mat);
-      frameMesh.castShadow = true;
+      frameMesh.castShadow = castShadows;
       this.gunPivot.add(frameMesh);
 
       this.gunSlideMesh = new THREE.Mesh(pistolAssets.slideGeo, pistolAssets.mat);
-      this.gunSlideMesh.castShadow = true;
+      this.gunSlideMesh.castShadow = castShadows;
       this.gunPivot.add(this.gunSlideMesh);
 
       this.muzzleAnchor.position.set(0, 0.048, 0.215);
@@ -1135,7 +1135,8 @@ export class SparrowMesh {
       this.wingLeftOuter,
       this.wingTipLeft,
       assets.wingLeftInnerGeo,
-      assets.wingLeftOuterGeo
+      assets.wingLeftOuterGeo,
+      castShadows
     );
     this.attachWing(
       1,
@@ -1143,7 +1144,8 @@ export class SparrowMesh {
       this.wingRightOuter,
       this.wingTipRight,
       assets.wingRightInnerGeo,
-      assets.wingRightOuterGeo
+      assets.wingRightOuterGeo,
+      castShadows
     );
 
     // 4. Tail
@@ -1154,7 +1156,7 @@ export class SparrowMesh {
       const norm = i - 3.0;
       const absNorm = Math.abs(norm);
       const fm = new THREE.Mesh(assets.tailFeatherGeos[i], this.mat);
-      fm.castShadow = i % 2 === 1;
+      fm.castShadow = castShadows && i % 2 === 1;
       fm.rotation.y = norm * 0.042;
       fm.position.y = -absNorm * 0.003;
       this.tailPivot.add(fm);
@@ -1170,7 +1172,7 @@ export class SparrowMesh {
     const group = new THREE.Group();
     const crownAssets = getOrBuildRoyalCrownAssets();
     const mesh = new THREE.Mesh(crownAssets.geo, crownAssets.mat);
-    mesh.castShadow = true;
+    mesh.castShadow = false;
     mesh.receiveShadow = false;
     group.add(mesh);
     return group;
@@ -1227,7 +1229,8 @@ export class SparrowMesh {
     outerGroup: THREE.Group,
     tipAnchor: THREE.Object3D,
     innerGeo: THREE.BufferGeometry,
-    outerGeo: THREE.BufferGeometry
+    outerGeo: THREE.BufferGeometry,
+    castShadows = true
   ): void {
     const pal = this.palette;
     const bs = pal.bodyScale;
@@ -1236,14 +1239,14 @@ export class SparrowMesh {
     this.bodyPivot.add(innerGroup);
 
     const innerMesh = new THREE.Mesh(innerGeo, this.mat);
-    innerMesh.castShadow = true;
+    innerMesh.castShadow = castShadows;
     innerGroup.add(innerMesh);
 
     outerGroup.position.set(side * 0.22 * bs[0], 0, -0.016 * bs[2]);
     innerGroup.add(outerGroup);
 
     const outerMesh = new THREE.Mesh(outerGeo, this.mat);
-    outerMesh.castShadow = true;
+    outerMesh.castShadow = castShadows;
     outerGroup.add(outerMesh);
 
     tipAnchor.position.set(side * 0.40 * (pal.isPigeon ? 1.18 : 1.0), 0, -0.05);

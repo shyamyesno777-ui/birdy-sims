@@ -32,6 +32,15 @@ export class CombatStatusHUD {
   private currentMode: RebellionMode = 'peaceful';
   private isAdmired = false;
   private perchCooldownSec = 0;
+  private lastHpText = '100 HP';
+  private lastHpPctStr = '100%';
+  private lastWarnState = false;
+  private lastDangerState = false;
+  private lastKillsDisplayed = 0;
+  private lastRespectDisplayed = 0;
+  private lastBadgeKey = 'peaceful|0|0';
+  private lastCooldownUiMs = 0;
+  private lastIntimidateAvailable = false;
   public onRestart?: () => void;
 
   constructor(parent: HTMLElement) {
@@ -198,11 +207,27 @@ export class CombatStatusHUD {
     this.currentMaxHp = Math.max(1, Math.round(maxHp));
 
     const pct = Math.max(0, Math.min(100, (this.currentHp / this.currentMaxHp) * 100));
-    this.hpValueEl.textContent = `${this.currentHp} HP`;
-    this.hpBarFillEl.style.width = `${pct}%`;
+    const nextHpText = `${this.currentHp} HP`;
+    if (nextHpText !== this.lastHpText) {
+      this.lastHpText = nextHpText;
+      this.hpValueEl.textContent = nextHpText;
+    }
+    const nextPctStr = `${pct}%`;
+    if (nextPctStr !== this.lastHpPctStr) {
+      this.lastHpPctStr = nextPctStr;
+      this.hpBarFillEl.style.width = nextPctStr;
+    }
 
-    this.hpBarFillEl.classList.toggle('is-warn', pct <= 50 && pct > 25);
-    this.hpBarFillEl.classList.toggle('is-danger', pct <= 25);
+    const warn = pct <= 50 && pct > 25;
+    if (warn !== this.lastWarnState) {
+      this.lastWarnState = warn;
+      this.hpBarFillEl.classList.toggle('is-warn', warn);
+    }
+    const danger = pct <= 25;
+    if (danger !== this.lastDangerState) {
+      this.lastDangerState = danger;
+      this.hpBarFillEl.classList.toggle('is-danger', danger);
+    }
 
     if (downed || this.currentHp <= 0) {
       if (this.alertBannerTimer !== null) {
@@ -219,12 +244,14 @@ export class CombatStatusHUD {
         document.exitPointerLock?.();
       }
       this.restartBtnEl.focus({ preventScroll: true });
-    } else if (!this.gameOverVisible) {
+      this.downedBannerEl.classList.remove('is-hidden');
+      this.downedBannerEl.setAttribute('aria-hidden', 'false');
+    } else if (!this.gameOverVisible && this.alertBannerTimer === null) {
       this.gameOverOverlayEl.classList.add('is-hidden');
       this.gameOverOverlayEl.setAttribute('aria-hidden', 'true');
+      this.downedBannerEl.classList.add('is-hidden');
+      this.downedBannerEl.setAttribute('aria-hidden', 'true');
     }
-    this.downedBannerEl.classList.toggle('is-hidden', !downed && !this.gameOverVisible);
-    this.downedBannerEl.setAttribute('aria-hidden', downed || this.gameOverVisible ? 'false' : 'true');
 
     if (tookDamage) {
       this.hurtFlashEl.classList.remove('is-active');
@@ -241,19 +268,37 @@ export class CombatStatusHUD {
   }
 
   public setKillsAndMode(kills: number, mode: RebellionMode): void {
+    const modeChanged = mode !== this.currentMode;
     this.currentKills = kills;
     this.currentMode = mode;
-    this.killsValueEl.textContent = String(this.currentKills);
-    this.refreshBadgeText();
+    if (kills !== this.lastKillsDisplayed) {
+      this.lastKillsDisplayed = kills;
+      this.killsValueEl.textContent = String(this.currentKills);
+    }
+    if (modeChanged) {
+      this.refreshBadgeText();
+    }
   }
 
   public setAdmiredAndCooldown(admired: boolean, cooldownRemaining: number): void {
+    const nextSec = Math.max(0, Math.ceil(cooldownRemaining));
+    const admiredChanged = admired !== this.isAdmired;
+    const hitZero = this.perchCooldownSec > 0 && nextSec === 0;
     this.isAdmired = admired;
-    this.perchCooldownSec = Math.max(0, Math.ceil(cooldownRemaining));
+    this.perchCooldownSec = nextSec;
+    if (!admiredChanged && !hitZero) {
+      const now = performance.now();
+      if (now - this.lastCooldownUiMs < 250) return;
+      this.lastCooldownUiMs = now;
+    }
     this.refreshBadgeText();
   }
 
   private refreshBadgeText(): void {
+    const nextKey = `${this.currentMode}|${this.isAdmired ? 1 : 0}|${this.perchCooldownSec}`;
+    if (nextKey === this.lastBadgeKey) return;
+    this.lastBadgeKey = nextKey;
+
     this.rebellionBadgeEl.classList.remove(
       'is-peaceful',
       'is-admired',
@@ -328,7 +373,10 @@ export class CombatStatusHUD {
 
   public setRespectXp(totalRespect: number, gained: number): void {
     this.currentRespect = Math.max(0, Math.round(totalRespect));
-    this.respectValueEl.textContent = `${this.currentRespect}`;
+    if (this.currentRespect !== this.lastRespectDisplayed) {
+      this.lastRespectDisplayed = this.currentRespect;
+      this.respectValueEl.textContent = `${this.currentRespect}`;
+    }
     if (gained > 0 && this.currentHp > 0) {
       if (this.alertBannerTimer !== null) {
         window.clearTimeout(this.alertBannerTimer);
@@ -351,6 +399,8 @@ export class CombatStatusHUD {
   }
 
   public setIntimidateAvailable(available: boolean): void {
+    if (available === this.lastIntimidateAvailable) return;
+    this.lastIntimidateAvailable = available;
     this.intimidatePromptEl.classList.toggle('is-hidden', !available);
   }
 

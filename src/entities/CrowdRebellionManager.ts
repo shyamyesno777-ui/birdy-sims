@@ -3,6 +3,8 @@ import { PALETTE } from '../rendering/Palette.ts';
 import {
   createPastelMaterial,
   createUnlitPastelFXMaterial,
+  SHARED_GOLDEN_TROPHY_MAT,
+  SHARED_NPC_LAMBERT_MAT,
 } from '../rendering/StorybookMaterial.ts';
 import {
   rbox,
@@ -21,7 +23,7 @@ import type { WorldFX } from '../rendering/WorldFX.ts';
 import type { EventBus, GameEventMap, RebellionMode } from '../core/EventBus.ts';
 import type { PerchSystem } from '../world/PerchSystem.ts';
 
-export const CROWD_POOL_SIZE = 45;
+export const CROWD_POOL_SIZE = 26;
 export const MAX_ACTIVE_RAGDOLLS = 15;
 export const MAX_ACTIVE_BULLETS = 50;
 export const BIRD_MAX_HEALTH = 100;
@@ -56,8 +58,17 @@ const INTIMIDATE_RESPECT_XP = 25;
 const INTIMIDATE_NPC_COOLDOWN = 14.0;
 const RESPECT_ORB_POOL_SIZE = 16;
 
+const NPC_REFILL_INTERVAL_SEC = 3.0;
+const POP_APART_CHANCE = 0.30;
+
 type CrowdArea = 'park' | 'street' | 'cafe';
-type CrowdState = 'walking' | 'fleeing' | 'crying' | 'hostile' | 'ragdoll';
+type CrowdState =
+  | 'walking'
+  | 'fleeing'
+  | 'crying'
+  | 'hostile'
+  | 'ragdoll'
+  | 'waiting_refill';
 
 interface WalkNode {
   x: number;
@@ -75,16 +86,30 @@ interface CrowdStyleSpec {
 }
 
 interface CrowdStyleGeometries {
-  torsoHeadGeo: THREE.BufferGeometry;
+  torsoGeo: THREE.BufferGeometry;
+  headGeo: THREE.BufferGeometry;
   armGeo: THREE.BufferGeometry;
   legGeo: THREE.BufferGeometry;
+}
+
+interface PopPieceSim {
+  pivot: THREE.Group;
+  restPos: THREE.Vector3;
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  rot: THREE.Vector3;
+  rotVel: THREE.Vector3;
+  floorOffsetY: number;
 }
 
 interface CrowdHumanSlot {
   index: number;
   root: THREE.Group;
   bodyPivot: THREE.Group;
-  torsoHeadMesh: THREE.Mesh;
+  torsoPivot: THREE.Group;
+  torsoMesh: THREE.Mesh;
+  headPivot: THREE.Group;
+  headMesh: THREE.Mesh;
   armLPivot: THREE.Group;
   armLMesh: THREE.Mesh;
   armRPivot: THREE.Group;
@@ -128,8 +153,12 @@ interface CrowdHumanSlot {
   fireCooldown: number;
   muzzleFlashTimer: number;
   steerStuckFrames: number;
-  // Ragdoll simulation fields (active up to 15 simultaneously)
+  stuckTimer: number;
+  stuckCheckX: number;
+  stuckCheckZ: number;
+  // Slapstick ragdoll & toy pop-apart simulation fields (strictly max 15 active)
   ragdollTimer: number;
+  ragdollPopApart: boolean;
   ragdollPos: THREE.Vector3;
   ragdollVel: THREE.Vector3;
   ragdollPitch: number;
@@ -138,6 +167,7 @@ interface CrowdHumanSlot {
   ragdollRollVel: number;
   ragdollYawVel: number;
   ragdollMatIdx: number;
+  popPieces: PopPieceSim[];
 }
 
 interface EnemyBulletSlot {
@@ -186,6 +216,9 @@ const _bulletHit = createGroundRaycastHit();
 const _burstPos = new THREE.Vector3();
 const _ejectImpulse = new THREE.Vector3();
 const _steer2dOut = { x: 0, z: 0, steerX: 0, steerZ: 0, collided: false };
+const _stuckNormalOut = { x: 0, z: 0 };
+const STUCK_DIST_THRESHOLD_SQ = 0.3 * 0.3;
+const STUCK_DURATION_SEC = 1.5;
 
 const CROWD_STYLES: readonly CrowdStyleSpec[] = [
   {
@@ -237,14 +270,14 @@ const CROWD_STYLES: readonly CrowdStyleSpec[] = [
  * NW Cafe Promenade, SE Market Walk, and SW Canal Quays (avoiding buildings & basins).
  */
 const WALK_GRAPH: readonly WalkNode[] = [
-  // 0..7: Central Streets & Boulevards (N-S corridor x = ±16, E-W corridor z = ±16)
+  // 0..7: Central Streets & Boulevards (strictly clear of sunken canal bank & bridges)
   { x: -16, z: 16, area: 'street', neighbors: [1, 2, 8, 16] },
   { x: 16, z: 16, area: 'street', neighbors: [0, 3, 18, 26] },
   { x: -16, z: -16, area: 'street', neighbors: [0, 3, 36, 28] },
   { x: 16, z: -16, area: 'street', neighbors: [1, 2, 5, 22] },
-  { x: -16, z: -64, area: 'street', neighbors: [36, 37] },
+  { x: -10.5, z: -54, area: 'street', neighbors: [36, 37] },
   { x: 16, z: -64, area: 'street', neighbors: [3, 7, 23, 25] },
-  { x: -16, z: -96, area: 'street', neighbors: [37, 7] },
+  { x: -14, z: -96, area: 'street', neighbors: [37, 7] },
   { x: 16, z: -96, area: 'street', neighbors: [5, 6, 24] },
 
   // 8..15: NW Cafe Promenade & Upper North Street
@@ -254,12 +287,12 @@ const WALK_GRAPH: readonly WalkNode[] = [
   { x: -33, z: 89, area: 'cafe', neighbors: [9, 12, 13] },
   { x: -29.5, z: 62, area: 'cafe', neighbors: [8, 10, 11] },
   { x: -64, z: 90, area: 'cafe', neighbors: [11, 15] },
-  { x: -16, z: 106, area: 'street', neighbors: [9, 17, 38] },
+  { x: -10.5, z: 106, area: 'street', neighbors: [9, 17, 38] },
   { x: -94, z: 90, area: 'cafe', neighbors: [13, 39] },
 
   // 16..21: Upper Avenue & NE Botanical Park West/North Paths
   { x: -46, z: 16, area: 'street', neighbors: [0, 29] },
-  { x: 16, z: 106, area: 'street', neighbors: [14, 18, 20, 42] },
+  { x: 10.5, z: 106, area: 'street', neighbors: [14, 18, 20, 42] },
   { x: 16, z: 54, area: 'street', neighbors: [1, 17, 19] },
   { x: 24, z: 26, area: 'park', neighbors: [18, 20, 21, 26] },
   { x: 24, z: 84, area: 'park', neighbors: [17, 19, 32] },
@@ -268,14 +301,14 @@ const WALK_GRAPH: readonly WalkNode[] = [
   // 22..25: SE Farmers' Market & Plaza
   { x: 30, z: -28, area: 'cafe', neighbors: [3, 23, 27] },
   { x: 42, z: -56, area: 'cafe', neighbors: [5, 22, 24, 25] },
-  { x: 70, z: -80, area: 'cafe', neighbors: [7, 23, 25, 50] },
+  { x: 70, z: -80, area: 'cafe', neighbors: [7, 23, 25, 51] },
   { x: 42, z: -82, area: 'cafe', neighbors: [5, 23, 24] },
 
-  // 26..31: E/W Boulevards & SW Canal Quays (strictly clear of sunken canal trench)
+  // 26..31: E/W Boulevards & SW Canal Quays (strictly clear of sunken canal trench & Galleria piers)
   { x: 52, z: 16, area: 'street', neighbors: [1, 19, 27] },
-  { x: 86, z: 16, area: 'street', neighbors: [22, 26, 33, 44] },
+  { x: 86, z: 10.5, area: 'street', neighbors: [22, 26, 33, 44] },
   { x: -48, z: -16, area: 'street', neighbors: [2, 29] },
-  { x: -88, z: 16, area: 'street', neighbors: [16, 28, 40] },
+  { x: -88, z: 10.5, area: 'street', neighbors: [16, 28, 40] },
   { x: -56, z: -34, area: 'cafe', neighbors: [36, 34] },
   { x: -54, z: -74, area: 'cafe', neighbors: [37, 35] },
 
@@ -284,60 +317,64 @@ const WALK_GRAPH: readonly WalkNode[] = [
   { x: 82, z: 48, area: 'park', neighbors: [21, 27, 32] },
   { x: -86, z: -34, area: 'cafe', neighbors: [30] },
   { x: -84, z: -76, area: 'cafe', neighbors: [31, 46] },
-  { x: -16, z: -34, area: 'street', neighbors: [2, 4, 30] },
-  { x: -16, z: -74, area: 'street', neighbors: [4, 6, 31, 49] },
+  { x: -12, z: -34, area: 'street', neighbors: [2, 4, 30] },
+  { x: -12, z: -74, area: 'street', neighbors: [4, 6, 31, 49] },
 
-  // 38..53: Expanded Outer City Boulevards, Plazas & Parks (Nodes stay area='street' so couples remain near parks/cafes)
-  { x: -16, z: 196, area: 'street', neighbors: [14, 39, 41, 42] },
-  { x: -185, z: 160, area: 'street', neighbors: [15, 38, 40, 41] },
-  { x: -185, z: 16, area: 'street', neighbors: [29, 39, 46] },
-  { x: -228, z: 242, area: 'street', neighbors: [38, 39] },
-  { x: 16, z: 196, area: 'street', neighbors: [17, 38, 43, 45] },
-  { x: 185, z: 160, area: 'street', neighbors: [32, 42, 44, 45] },
-  { x: 185, z: 16, area: 'street', neighbors: [27, 43, 52] },
-  { x: 228, z: 242, area: 'street', neighbors: [42, 43] },
-  { x: -185, z: -120, area: 'street', neighbors: [35, 40, 47, 48] },
-  { x: -228, z: -242, area: 'street', neighbors: [46, 48, 49] },
-  { x: -16, z: -196, area: 'street', neighbors: [46, 47, 49, 51] },
-  { x: -16, z: -120, area: 'street', neighbors: [37, 47, 48] },
-  { x: 185, z: -160, area: 'street', neighbors: [24, 51, 52, 53] },
-  { x: 16, z: -196, area: 'street', neighbors: [48, 50, 53] },
-  { x: 185, z: -16, area: 'street', neighbors: [44, 50] },
-  { x: 228, z: -242, area: 'street', neighbors: [50, 51] },
+  // 38..53: Expanded Outer City Boulevards, Plazas & Parks (clear of corner townhouses & aligned through Galleria archways)
+  { x: -9.5, z: 196, area: 'street', neighbors: [14, 39, 41, 42] },
+  { x: -152, z: 160, area: 'street', neighbors: [15, 38, 40] },
+  { x: -228, z: 9.5, area: 'street', neighbors: [29, 39, 41, 46] },
+  { x: -228, z: 228, area: 'street', neighbors: [38, 40] },
+  { x: 9.5, z: 196, area: 'street', neighbors: [17, 38, 43, 45] },
+  { x: 152, z: 160, area: 'street', neighbors: [32, 42, 44] },
+  { x: 228, z: 9.5, area: 'street', neighbors: [27, 43, 45, 52] },
+  { x: 228, z: 228, area: 'street', neighbors: [42, 44] },
+  { x: -228, z: -120, area: 'street', neighbors: [35, 40, 47, 49] },
+  { x: -228, z: -228, area: 'street', neighbors: [46, 48] },
+  { x: -9.5, z: -196, area: 'street', neighbors: [47, 49, 51] },
+  { x: -9.5, z: -120, area: 'street', neighbors: [37, 46, 48] },
+  { x: 160, z: -160, area: 'street', neighbors: [51, 52, 53] },
+  { x: 9.5, z: -196, area: 'street', neighbors: [24, 48, 50, 53] },
+  { x: 228, z: -9.5, area: 'street', neighbors: [44, 50, 53] },
+  { x: 228, z: -228, area: 'street', neighbors: [50, 51, 52] },
 ];
 
-// Dedicated Park & Cafe starting nodes for the 6 linked couples (slots 0..11)
-const COUPLE_SPAWN_NODES: readonly number[] = [8, 19, 12, 20, 22, 33];
-// Dedicated plaza, boulevard, market, and park-gate nodes for the 4 Trophy Cart NPCs (slots 12..15)
-const TROPHY_CART_SPAWN_NODES: readonly number[] = [0, 1, 22, 18];
+// Dedicated Park, Cafe & Expanded Boulevard starting nodes for the 6 linked couples (slots 0..11)
+const COUPLE_SPAWN_NODES: readonly number[] = [8, 19, 24, 33, 39, 43];
+// Dedicated plaza, boulevard, market, and outer avenue nodes for the 4 Trophy Cart NPCs (slots 12..15)
+const TROPHY_CART_SPAWN_NODES: readonly number[] = [0, 22, 27, 38];
+// Widely spaced solo pedestrian starting nodes across central & expanded districts (slots 16..25)
+const SOLO_SPAWN_NODES: readonly number[] = [3, 6, 14, 16, 29, 36, 40, 44, 48, 51, 52, 46];
 
 function buildStyleGeometries(spec: CrowdStyleSpec): CrowdStyleGeometries {
-  // Torso + collar + head + hair/cap merged into one lightweight opaque mesh
-  const torsoHeadParts: THREE.BufferGeometry[] = [
+  // Torso + collar grouped around hip origin (0, 0, 0) for clean toy pop-apart tumbles
+  const torsoGeo = mergeParts([
     transformGeo(rbox(1.56, 2.72, 0.96, 0.24, spec.coatHex, 1), {
       pos: [0, 1.38, 0],
     }),
     transformGeo(rcyl(0.46, 0.56, 0.34, spec.scarfHex, 10), {
       pos: [0, 2.74, 0.02],
     }),
+  ]);
+
+  // Articulated block head + hair + expressive eyes centered on headPivot (0, 3.32, 0)
+  const headGeo = mergeParts([
     transformGeo(rcyl(0.24, 0.28, 0.36, spec.skinHex, 8), {
-      pos: [0, 3.04, 0],
+      pos: [0, -0.28, 0],
     }),
     transformGeo(smoothSphere(0.76, spec.skinHex, 12, 10, [0.95, 1.06, 0.98]), {
-      pos: [0, 3.74, 0.02],
+      pos: [0, 0.42, 0.02],
     }),
     transformGeo(smoothSphere(0.8, spec.hairHex, 12, 8, [1.02, 0.72, 1.04]), {
-      pos: [0, 4.08, -0.08],
-    }),
-    // Expressive dark eyes on front face (+Z)
-    transformGeo(rbox(0.12, 0.14, 0.08, 0.03, PALETTE.ironworkPlum, 1), {
-      pos: [-0.24, 3.78, 0.71],
+      pos: [0, 0.76, -0.08],
     }),
     transformGeo(rbox(0.12, 0.14, 0.08, 0.03, PALETTE.ironworkPlum, 1), {
-      pos: [0.24, 3.78, 0.71],
+      pos: [-0.24, 0.46, 0.71],
     }),
-  ];
-  const torsoHeadGeo = mergeParts(torsoHeadParts);
+    transformGeo(rbox(0.12, 0.14, 0.08, 0.03, PALETTE.ironworkPlum, 1), {
+      pos: [0.24, 0.46, 0.71],
+    }),
+  ]);
 
   // Single downward arm geometry hanging from shoulder pivot (0, 0, 0) down to y = -2.35
   const armGeo = mergeParts([
@@ -359,7 +396,7 @@ function buildStyleGeometries(spec: CrowdStyleSpec): CrowdStyleGeometries {
     }),
   ]);
 
-  return { torsoHeadGeo, armGeo, legGeo };
+  return { torsoGeo, headGeo, armGeo, legGeo };
 }
 
 function buildEnemyPistolGeometry(): THREE.BufferGeometry {
@@ -526,8 +563,8 @@ function createRagdollFadeMaterial(): THREE.MeshLambertNodeMaterial {
 }
 
 /**
- * Performance-optimized Object-Pooled 45-NPC Crowd & Rebellion Escalation Manager:
- * - 45 lightweight articulated 3D pedestrians walking across park, street, and cafe zones
+ * Performance-optimized Object-Pooled 26-NPC Crowd & Rebellion Escalation Manager:
+ * - 26 lightweight articulated 3D pedestrians walking across park, street, and cafe zones
  * - Object-pooled ragdoll knockout (3-second collapse + opacity fade-out + off-screen recycle),
  *   strictly capped at 15 simultaneous ragdolls to preserve 60 FPS
  * - Birdy Health (100 HP), Kills counter, panic scream/flee below 5 kills,
@@ -535,7 +572,7 @@ function createRagdollFadeMaterial(): THREE.MeshLambertNodeMaterial {
  */
 export class CrowdRebellionManager {
   private readonly group = new THREE.Group();
-  private readonly sharedOpaqueMat: THREE.NodeMaterial;
+  private readonly sharedOpaqueMat: THREE.Material;
   private readonly pistolMat: THREE.NodeMaterial;
   private readonly shadowMat: THREE.MeshBasicNodeMaterial;
   private readonly muzzleMat: THREE.MeshBasicNodeMaterial;
@@ -563,11 +600,13 @@ export class CrowdRebellionManager {
 
   private readonly slots: CrowdHumanSlot[] = [];
   private readonly activeRagdollQueue: number[] = [];
+  private readonly pendingRefillQueue: number[] = [];
   private readonly freeRagdollMatIndices: number[] = [];
   private readonly enemyBullets: EnemyBulletSlot[] = [];
   private readonly respectOrbs: RespectOrbSlot[] = [];
   private enemyBulletCursor = 0;
   private respectOrbCursor = 0;
+  private refillTimer = NPC_REFILL_INTERVAL_SEC;
 
   private kills = 0;
   private respectXp = 0;
@@ -598,7 +637,7 @@ export class CrowdRebellionManager {
     this.group.name = 'crowd_rebellion_pool';
     this.scene.add(this.group);
 
-    this.sharedOpaqueMat = createPastelMaterial({ vertexColors: true, rimStrength: 0.08 });
+    this.sharedOpaqueMat = SHARED_NPC_LAMBERT_MAT;
     this.pistolMat = createPastelMaterial({ color: 0x2a303b, vertexColors: false, rimStrength: 0.1 });
     this.shadowMat = createUnlitPastelFXMaterial(0x1b202b, 0.24, true);
     this.muzzleMat = createUnlitPastelFXMaterial(0xffb845, 0.92, true);
@@ -653,7 +692,7 @@ export class CrowdRebellionManager {
       this.prewarmMeshes.push(pw);
     }
 
-    // Build 45 pooled pedestrian NPCs distributed cleanly across park, streets & cafe areas
+    // Build 26 pooled pedestrian NPCs distributed cleanly across park, streets & cafe areas
     for (let i = 0; i < CROWD_POOL_SIZE; i++) {
       const slot = this.createHumanSlot(i);
       this.slots.push(slot);
@@ -724,6 +763,18 @@ export class CrowdRebellionManager {
     return this.activeRagdollQueue.length;
   }
 
+  public getPendingRefillCount(): number {
+    return this.pendingRefillQueue.length;
+  }
+
+  public getActiveGroundNpcCount(): number {
+    let count = 0;
+    for (let i = 0; i < this.slots.length; i++) {
+      if (this.slots[i].state !== 'waiting_refill') count++;
+    }
+    return count;
+  }
+
   public getPerchCooldownRemaining(): number {
     return this.perchCooldownTimer;
   }
@@ -780,10 +831,21 @@ export class CrowdRebellionManager {
     bodyPivot.position.set(0, baseHipY, 0);
     root.add(bodyPivot);
 
-    const torsoHeadMesh = new THREE.Mesh(style.torsoHeadGeo, this.sharedOpaqueMat);
-    torsoHeadMesh.castShadow = false;
-    torsoHeadMesh.receiveShadow = true;
-    bodyPivot.add(torsoHeadMesh);
+    const torsoPivot = new THREE.Group();
+    torsoPivot.position.set(0, 0, 0);
+    const torsoMesh = new THREE.Mesh(style.torsoGeo, this.sharedOpaqueMat);
+    torsoMesh.castShadow = false;
+    torsoMesh.receiveShadow = true;
+    torsoPivot.add(torsoMesh);
+    bodyPivot.add(torsoPivot);
+
+    const headPivot = new THREE.Group();
+    headPivot.position.set(0, 3.32, 0);
+    const headMesh = new THREE.Mesh(style.headGeo, this.sharedOpaqueMat);
+    headMesh.castShadow = false;
+    headMesh.receiveShadow = true;
+    headPivot.add(headMesh);
+    bodyPivot.add(headPivot);
 
     const armLPivot = new THREE.Group();
     armLPivot.position.set(-1.02, 2.66, 0);
@@ -818,20 +880,20 @@ export class CrowdRebellionManager {
     bodyPivot.add(armRPivot);
 
     const legLPivot = new THREE.Group();
-    legLPivot.position.set(-0.4, baseHipY, 0);
+    legLPivot.position.set(-0.4, 0, 0);
     const legLMesh = new THREE.Mesh(style.legGeo, this.sharedOpaqueMat);
     legLMesh.castShadow = false;
     legLMesh.receiveShadow = true;
     legLPivot.add(legLMesh);
-    root.add(legLPivot);
+    bodyPivot.add(legLPivot);
 
     const legRPivot = new THREE.Group();
-    legRPivot.position.set(0.4, baseHipY, 0);
+    legRPivot.position.set(0.4, 0, 0);
     const legRMesh = new THREE.Mesh(style.legGeo, this.sharedOpaqueMat);
     legRMesh.castShadow = false;
     legRMesh.receiveShadow = true;
     legRPivot.add(legRMesh);
-    root.add(legRPivot);
+    bodyPivot.add(legRPivot);
 
     // Floating heart & sparkle icon above NPC's head when bird is perched & admired
     const heartIconGroup = new THREE.Group();
@@ -875,7 +937,7 @@ export class CrowdRebellionManager {
 
       trophyGroup = new THREE.Group();
       trophyGroup.position.set(0, 2.34, 0.15);
-      const trophyMesh = new THREE.Mesh(this.trophyGeo, this.sharedOpaqueMat);
+      const trophyMesh = new THREE.Mesh(this.trophyGeo, SHARED_GOLDEN_TROPHY_MAT);
       trophyMesh.castShadow = false;
       trophyMesh.receiveShadow = true;
       trophyGroup.add(trophyMesh);
@@ -904,12 +966,13 @@ export class CrowdRebellionManager {
       root.add(rageAuraGroup);
     }
 
-    // Pick initial node: couples spawn together at Park/Cafe nodes; trophy carts at prominent plazas; others across WALK_GRAPH
+    // Pick initial node: couples spawn together at spaced Park/Cafe/Boulevard nodes; trophy carts at plazas; solo walkers spaced across SOLO_SPAWN_NODES
+    const soloIdx = Math.max(0, index - TROPHY_CART_END_INDEX);
     const nodeIdx = isCoupleSlot
       ? COUPLE_SPAWN_NODES[coupleId % COUPLE_SPAWN_NODES.length]
       : isTrophyCartSlot
         ? TROPHY_CART_SPAWN_NODES[(index - TROPHY_CART_START_INDEX) % TROPHY_CART_SPAWN_NODES.length]
-        : (index * 7) % WALK_GRAPH.length;
+        : SOLO_SPAWN_NODES[soloIdx % SOLO_SPAWN_NODES.length];
     const node = WALK_GRAPH[nodeIdx];
     const nextIdx = isCoupleSlot
       ? this.pickCoupleNeighbor(nodeIdx, -1, coupleId)
@@ -931,22 +994,89 @@ export class CrowdRebellionManager {
       spawnX = node.x;
       spawnZ = node.z;
     } else {
-      // Small lateral sidewalk spread so multiple solo walkers look natural
+      // Small lateral sidewalk spread so solo walkers look natural, verified clear of No-Walk Zones
       const jitterAngle = (index * 2.39996) % (Math.PI * 2);
-      const jitterR = 1.4 + (index % 3) * 1.15;
-      spawnX = node.x + Math.cos(jitterAngle) * jitterR;
-      spawnZ = node.z + Math.sin(jitterAngle) * jitterR;
+      const jitterR = 1.6 + (index % 3) * 1.35;
+      const candX = node.x + Math.cos(jitterAngle) * jitterR;
+      const candZ = node.z + Math.sin(jitterAngle) * jitterR;
+      if (this.isValidSpawnCoord(candX, candZ)) {
+        spawnX = candX;
+        spawnZ = candZ;
+      } else {
+        spawnX = node.x;
+        spawnZ = node.z;
+      }
     }
     const groundY = this.sampleWalkGroundY(spawnX, spawnZ);
 
     root.position.set(spawnX, groundY, spawnZ);
     root.rotation.y = yaw;
 
+    const popPieces: PopPieceSim[] = [
+      {
+        pivot: torsoPivot,
+        restPos: new THREE.Vector3(0, 0, 0),
+        pos: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+        rot: new THREE.Vector3(),
+        rotVel: new THREE.Vector3(),
+        floorOffsetY: 0.72,
+      },
+      {
+        pivot: headPivot,
+        restPos: new THREE.Vector3(0, 3.32, 0),
+        pos: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+        rot: new THREE.Vector3(),
+        rotVel: new THREE.Vector3(),
+        floorOffsetY: 0.76,
+      },
+      {
+        pivot: armLPivot,
+        restPos: new THREE.Vector3(-1.02, 2.66, 0),
+        pos: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+        rot: new THREE.Vector3(),
+        rotVel: new THREE.Vector3(),
+        floorOffsetY: 1.05,
+      },
+      {
+        pivot: armRPivot,
+        restPos: new THREE.Vector3(1.02, 2.66, 0),
+        pos: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+        rot: new THREE.Vector3(),
+        rotVel: new THREE.Vector3(),
+        floorOffsetY: 1.05,
+      },
+      {
+        pivot: legLPivot,
+        restPos: new THREE.Vector3(-0.4, 0, 0),
+        pos: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+        rot: new THREE.Vector3(),
+        rotVel: new THREE.Vector3(),
+        floorOffsetY: 1.55,
+      },
+      {
+        pivot: legRPivot,
+        restPos: new THREE.Vector3(0.4, 0, 0),
+        pos: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+        rot: new THREE.Vector3(),
+        rotVel: new THREE.Vector3(),
+        floorOffsetY: 1.55,
+      },
+    ];
+
     const slot: CrowdHumanSlot = {
       index,
       root,
       bodyPivot,
-      torsoHeadMesh,
+      torsoPivot,
+      torsoMesh,
+      headPivot,
+      headMesh,
       armLPivot,
       armLMesh,
       armRPivot,
@@ -994,7 +1124,11 @@ export class CrowdRebellionManager {
       fireCooldown: 0.7 + ((index * 13) % 10) * 0.18,
       muzzleFlashTimer: 0,
       steerStuckFrames: 0,
+      stuckTimer: 0,
+      stuckCheckX: spawnX,
+      stuckCheckZ: spawnZ,
       ragdollTimer: 0,
+      ragdollPopApart: false,
       ragdollPos: new THREE.Vector3(spawnX, groundY, spawnZ),
       ragdollVel: new THREE.Vector3(),
       ragdollPitch: 0,
@@ -1003,6 +1137,7 @@ export class CrowdRebellionManager {
       ragdollRollVel: 0,
       ragdollYawVel: 0,
       ragdollMatIdx: -1,
+      popPieces,
     };
 
     // Register left & right shoulder dynamic perches for peaceful shoulder-perching & admiring
@@ -1096,11 +1231,17 @@ export class CrowdRebellionManager {
   }
 
   private setSlotMaterial(slot: CrowdHumanSlot, mat: THREE.Material): void {
-    slot.torsoHeadMesh.material = mat;
+    slot.torsoMesh.material = mat;
+    slot.headMesh.material = mat;
     slot.armLMesh.material = mat;
     slot.armRMesh.material = mat;
     slot.legLMesh.material = mat;
     slot.legRMesh.material = mat;
+  }
+
+  private isValidSpawnCoord(x: number, z: number): boolean {
+    if (this.isInsideRestrictedArea(x, z)) return false;
+    return !this.physics.isInNoWalkZone(x, z, 0.85, true);
   }
 
   private isInsideRestrictedArea(x: number, z: number): boolean {
@@ -1108,11 +1249,139 @@ export class CrowdRebellionManager {
     const fdx = x - 48;
     const fdz = z - 48;
     if (fdx * fdx + fdz * fdz < 17.2 * 17.2) return true;
-    // Keep out of SW sunken canal basin water
-    if (x < -15.5 && z > -69.0 && z < -39.5) return true;
+    // Keep out of SW sunken canal basin water & quay border
+    if (x < -14.2 && z > -69.6 && z < -38.4) return true;
+    // Enforce all strict PhysicsWorld No-Walk Zones (water, bridge edges, buildings, outer walls)
+    if (this.physics.isInNoWalkZone(x, z, 0.72, false)) return true;
     // Check dynamic physics liquid basins
     if (this.physics.getBasinAtXZ(x, z, 0.4)) return true;
     return false;
+  }
+
+  private pickValidOpenWaypoint(
+    fromX: number,
+    fromZ: number,
+    escapeDirX: number,
+    escapeDirZ: number,
+    curNodeIdx: number,
+    avoidNodeIdx: number
+  ): { currentIdx: number; targetIdx: number } {
+    let nearestIdx = curNodeIdx;
+    let nearestDistSq = Infinity;
+    let bestTargetIdx = -1;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < WALK_GRAPH.length; i++) {
+      const node = WALK_GRAPH[i];
+      if (!this.isValidSpawnCoord(node.x, node.z)) continue;
+
+      const dx = node.x - fromX;
+      const dz = node.z - fromZ;
+      const distSq = dx * dx + dz * dz;
+
+      if (distSq < nearestDistSq) {
+        nearestDistSq = distSq;
+        nearestIdx = i;
+      }
+
+      if (i === avoidNodeIdx) continue;
+      if (distSq < 8 * 8 || distSq > 140 * 140) continue;
+
+      const dist = Math.sqrt(distSq);
+      const dot = (dx * escapeDirX + dz * escapeDirZ) / dist;
+      const lineClear = !this.physics.isSegmentBlockedByNoWalkZone(
+        fromX,
+        fromZ,
+        node.x,
+        node.z,
+        0.72
+      );
+
+      let score = dot * 120;
+      if (node.area === 'street' || node.area === 'park') score += 45;
+      if (lineClear) score += 85;
+      score -= Math.abs(dist - 42) * 0.35;
+      score += Math.random() * 8;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestTargetIdx = i;
+      }
+    }
+
+    if (bestTargetIdx < 0) {
+      // Fallback to any clear neighbor of nearest safe node
+      const nNode = WALK_GRAPH[nearestIdx] ?? WALK_GRAPH[0];
+      for (let i = 0; i < nNode.neighbors.length; i++) {
+        const nb = nNode.neighbors[i];
+        if (nb !== avoidNodeIdx && this.isValidSpawnCoord(WALK_GRAPH[nb].x, WALK_GRAPH[nb].z)) {
+          bestTargetIdx = nb;
+          break;
+        }
+      }
+      if (bestTargetIdx < 0) {
+        bestTargetIdx = (nearestIdx + 1) % WALK_GRAPH.length;
+      }
+    }
+
+    return { currentIdx: nearestIdx, targetIdx: bestTargetIdx };
+  }
+
+  private recoverStuckSlot(slot: CrowdHumanSlot): void {
+    slot.stuckTimer = 0;
+    slot.steerStuckFrames = 0;
+    slot.stuckCheckX = slot.root.position.x;
+    slot.stuckCheckZ = slot.root.position.z;
+
+    const hasObs = this.physics.findNearestNoWalkNormal(
+      slot.root.position.x,
+      slot.root.position.z,
+      18.0,
+      _stuckNormalOut
+    );
+
+    let escAngle: number;
+    if (hasObs) {
+      // Turn 120–180 degrees away from the vector pointing INTO the nearest obstacle/river edge
+      // (i.e. within ±60 degrees around the outward normal _stuckNormalOut)
+      const outwardAngle = Math.atan2(_stuckNormalOut.x, _stuckNormalOut.z);
+      const sideSign = slot.index % 2 === 0 ? 1 : -1;
+      const offsetFromOutward = sideSign * (Math.random() * (Math.PI / 3)); // ±60° -> 120°..180° from obstacle
+      escAngle = outwardAngle + offsetFromOutward;
+    } else {
+      // Turn 120–180 degrees away from current walking direction
+      const sideSign = slot.index % 2 === 0 ? 1 : -1;
+      const turnAmt = (2 * Math.PI) / 3 + Math.random() * (Math.PI / 3);
+      escAngle = slot.yaw + sideSign * turnAmt;
+    }
+
+    const escX = Math.sin(escAngle);
+    const escZ = Math.cos(escAngle);
+    slot.yaw = Math.atan2(escX, escZ);
+    slot.root.rotation.y = slot.yaw;
+
+    // Cancel current path & assign a valid open-street or park waypoint
+    const wp = this.pickValidOpenWaypoint(
+      slot.root.position.x,
+      slot.root.position.z,
+      escX,
+      escZ,
+      slot.currentNodeIdx,
+      slot.targetNodeIdx
+    );
+    slot.currentNodeIdx = wp.currentIdx;
+    slot.targetNodeIdx = wp.targetIdx;
+
+    if (slot.state === 'fleeing' || slot.state === 'crying') {
+      slot.fleeDirX = escX;
+      slot.fleeDirZ = escZ;
+    } else if (slot.state === 'hostile') {
+      // Break off jammed wall-hug pursuit onto clear street patrol if stuck 1.5s
+      slot.state = 'walking';
+      slot.gunGroup.visible = false;
+      slot.muzzleFlash.visible = false;
+      if (slot.rageAuraGroup) slot.rageAuraGroup.visible = false;
+    }
   }
 
   /**
@@ -1134,7 +1403,7 @@ export class CrowdRebellionManager {
 
     for (let i = 0; i < this.slots.length; i++) {
       const slot = this.slots[i];
-      if (slot.state === 'ragdoll') continue;
+      if (slot.state === 'ragdoll' || slot.state === 'waiting_refill') continue;
 
       const rx = slot.root.position.x;
       const ry = slot.root.position.y;
@@ -1208,7 +1477,7 @@ export class CrowdRebellionManager {
     birdPos: THREE.Vector3
   ): void {
     const slot = this.slots[cand.slotIndex];
-    if (!slot || slot.state === 'ragdoll') return;
+    if (!slot || slot.state === 'ragdoll' || slot.state === 'waiting_refill') return;
 
     // Shooting & shattering a prized Golden Trophy triggers Extreme Rage (red aura) + local rebellion + 70% accuracy
     if (cand.hitKind === 'trophy' && slot.hasTrophyCart && slot.trophyIntact) {
@@ -1305,7 +1574,12 @@ export class CrowdRebellionManager {
     let spawnedRebels = 0;
     for (let i = 0; i < this.slots.length; i++) {
       const other = this.slots[i];
-      if (other.index === slot.index || other.state === 'ragdoll' || other.state === 'crying') {
+      if (
+        other.index === slot.index ||
+        other.state === 'ragdoll' ||
+        other.state === 'waiting_refill' ||
+        other.state === 'crying'
+      ) {
         continue;
       }
       const dx = other.root.position.x - impactPos.x;
@@ -1416,7 +1690,11 @@ export class CrowdRebellionManager {
 
     for (let i = 0; i < this.slots.length; i++) {
       const slot = this.slots[i];
-      if (slot.state === 'ragdoll' || slot.state === 'crying') continue;
+      if (
+        slot.state === 'ragdoll' ||
+        slot.state === 'waiting_refill' ||
+        slot.state === 'crying'
+      ) continue;
 
       const dx = slot.root.position.x - origin.x;
       const dz = slot.root.position.z - origin.z;
@@ -1517,11 +1795,11 @@ export class CrowdRebellionManager {
   }
 
   private enterRagdoll(slot: CrowdHumanSlot, bulletDir: THREE.Vector3, _birdPos: THREE.Vector3): void {
-    // Enforce hard cap of MAX_ACTIVE_RAGDOLLS (15): force-recycle oldest active ragdoll if needed
+    // Enforce hard cap of MAX_ACTIVE_RAGDOLLS (15): evict oldest ragdoll to gradual offscreen refill queue
     while (this.activeRagdollQueue.length >= MAX_ACTIVE_RAGDOLLS) {
       const oldestIdx = this.activeRagdollQueue.shift();
       if (oldestIdx !== undefined && oldestIdx !== slot.index) {
-        this.recycleRagdollOffscreen(this.slots[oldestIdx]);
+        this.retireRagdollToPendingRefill(this.slots[oldestIdx]);
       }
     }
 
@@ -1535,17 +1813,48 @@ export class CrowdRebellionManager {
     if (slot.cartGroup) slot.cartGroup.visible = false;
     slot.shadowDisc.visible = false;
     slot.ragdollTimer = 0;
-    slot.ragdollPos.copy(slot.root.position);
-    slot.ragdollVel.set(
-      bulletDir.x * 13.5 + ((slot.index % 2 === 0 ? 1 : -1) * 2.2),
-      6.4,
-      bulletDir.z * 13.5 + (((slot.index * 3) % 2 === 0 ? -1 : 1) * 2.2)
-    );
-    slot.ragdollPitch = 0;
-    slot.ragdollRoll = 0;
-    slot.ragdollPitchVel = 4.6 + (slot.index % 3) * 1.1;
-    slot.ragdollRollVel = (slot.index % 2 === 0 ? 1 : -1) * (3.2 + (slot.index % 4) * 0.65);
-    slot.ragdollYawVel = (slot.index % 2 === 0 ? -1 : 1) * 2.4;
+
+    // 30% chance of goofy non-gore toy mannequin "pop-apart" effect; 70% exaggerated bouncy slapstick
+    const popApart = Math.random() < POP_APART_CHANCE;
+    slot.ragdollPopApart = popApart;
+
+    if (popApart) {
+      // Keep root grounded at impact spot and simulate all 6 toy mannequin parts bouncing locally inside unrotated bodyPivot
+      slot.bodyPivot.position.set(0, 0, 0);
+      slot.bodyPivot.rotation.set(0, 0, 0);
+      for (let p = 0; p < slot.popPieces.length; p++) {
+        const piece = slot.popPieces[p];
+        const ang = (p / slot.popPieces.length) * Math.PI * 2 + (slot.index % 5) * 0.45;
+        const spreadSpd = 5.2 + ((p * 7 + slot.index) % 5) * 1.35;
+        piece.pos.set(piece.restPos.x, slot.baseHipY + piece.restPos.y, piece.restPos.z);
+        piece.vel.set(
+          Math.cos(ang) * spreadSpd + bulletDir.x * 5.0,
+          9.5 + (p === 1 ? 5.5 : (p % 3) * 2.4),
+          Math.sin(ang) * spreadSpd + bulletDir.z * 5.0
+        );
+        piece.rot.set(0, 0, 0);
+        piece.rotVel.set(
+          (p % 2 === 0 ? 1 : -1) * (6.5 + p * 1.4),
+          (p % 3 === 0 ? -1 : 1) * (5.2 + p * 1.1),
+          (p % 2 === 1 ? 1 : -1) * (6.0 + p * 1.3)
+        );
+        piece.pivot.position.copy(piece.pos);
+        piece.pivot.rotation.set(0, 0, 0);
+      }
+    } else {
+      // Exaggerated bouncy cartoon slapstick ragdoll launch + spinning limbs
+      slot.ragdollPos.copy(slot.root.position);
+      slot.ragdollVel.set(
+        bulletDir.x * 16.5 + ((slot.index % 2 === 0 ? 1 : -1) * 3.4),
+        11.6 + (slot.index % 3) * 1.9,
+        bulletDir.z * 16.5 + (((slot.index * 3) % 2 === 0 ? -1 : 1) * 3.4)
+      );
+      slot.ragdollPitch = 0;
+      slot.ragdollRoll = 0;
+      slot.ragdollPitchVel = 8.4 + (slot.index % 3) * 1.6;
+      slot.ragdollRollVel = (slot.index % 2 === 0 ? 1 : -1) * (7.2 + (slot.index % 4) * 1.15);
+      slot.ragdollYawVel = (slot.index % 2 === 0 ? -1 : 1) * 5.6;
+    }
 
     if (slot.ragdollMatIdx === -1 && this.freeRagdollMatIndices.length > 0) {
       slot.ragdollMatIdx = this.freeRagdollMatIndices.pop()!;
@@ -1553,6 +1862,37 @@ export class CrowdRebellionManager {
     }
 
     this.activeRagdollQueue.push(slot.index);
+  }
+
+  private retireRagdollToPendingRefill(slot: CrowdHumanSlot): void {
+    const qPos = this.activeRagdollQueue.indexOf(slot.index);
+    if (qPos >= 0) {
+      this.activeRagdollQueue.splice(qPos, 1);
+    }
+
+    if (slot.ragdollMatIdx >= 0) {
+      this.ragdollMatPool[slot.ragdollMatIdx].opacity = 1.0;
+      this.freeRagdollMatIndices.push(slot.ragdollMatIdx);
+      slot.ragdollMatIdx = -1;
+    }
+
+    this.setSlotMaterial(slot, this.sharedOpaqueMat);
+    slot.state = 'waiting_refill';
+    slot.ragdollPopApart = false;
+    slot.ragdollTimer = 0;
+    slot.root.visible = false;
+    slot.root.position.set(0, -240, 0);
+    slot.shadowDisc.visible = false;
+    slot.gunGroup.visible = false;
+    slot.muzzleFlash.visible = false;
+    slot.heartIconGroup.visible = false;
+    slot.tearIconGroup.visible = false;
+    if (slot.rageAuraGroup) slot.rageAuraGroup.visible = false;
+    if (slot.cartGroup) slot.cartGroup.visible = false;
+
+    if (!this.pendingRefillQueue.includes(slot.index)) {
+      this.pendingRefillQueue.push(slot.index);
+    }
   }
 
   private pickOffscreenSpawnNode(birdPos: THREE.Vector3, camera: THREE.Camera): number {
@@ -1564,7 +1904,7 @@ export class CrowdRebellionManager {
 
     for (let i = 0; i < WALK_GRAPH.length; i++) {
       const node = WALK_GRAPH[i];
-      if (this.isInsideRestrictedArea(node.x, node.z)) continue;
+      if (!this.isValidSpawnCoord(node.x, node.z)) continue;
 
       const bdx = node.x - birdPos.x;
       const bdz = node.z - birdPos.z;
@@ -1581,6 +1921,17 @@ export class CrowdRebellionManager {
       let score = dot < 0.28 ? 100 : birdDistSq > 92 * 92 ? 40 : -50;
       score += Math.min(70, Math.sqrt(birdDistSq) * 0.45);
       score -= dot * 24;
+
+      // Penalize nodes that already have an active NPC nearby so offscreen refills stay well spaced across the expanded map
+      for (let s = 0; s < this.slots.length; s++) {
+        const other = this.slots[s];
+        if (other.state === 'waiting_refill' || other.state === 'ragdoll') continue;
+        const odx = node.x - other.root.position.x;
+        const odz = node.z - other.root.position.z;
+        if (odx * odx + odz * odz < 34 * 34) {
+          score -= 42;
+        }
+      }
 
       // Slight spread jitter so recycled NPCs don't all stack at one corner
       score += Math.random() * 14;
@@ -1625,12 +1976,15 @@ export class CrowdRebellionManager {
 
     const jitterAng = Math.random() * Math.PI * 2;
     const jitterR = 1.2 + Math.random() * 1.6;
-    const sx = node.x + Math.cos(jitterAng) * jitterR;
-    const sz = node.z + Math.sin(jitterAng) * jitterR;
+    const candX = node.x + Math.cos(jitterAng) * jitterR;
+    const candZ = node.z + Math.sin(jitterAng) * jitterR;
+    const sx = this.isValidSpawnCoord(candX, candZ) ? candX : node.x;
+    const sz = this.isValidSpawnCoord(candX, candZ) ? candZ : node.z;
     const gy = this.sampleWalkGroundY(sx, sz);
     const yaw = Math.atan2(nextNode.x - sx, nextNode.z - sz);
 
     slot.state = 'walking';
+    slot.ragdollPopApart = false;
     slot.rolledTier = 0;
     slot.extremeRage = false;
     slot.currentNodeIdx = nodeIdx;
@@ -1641,6 +1995,9 @@ export class CrowdRebellionManager {
     slot.cryTimer = 0;
     slot.intimidateCooldown = 0;
     slot.ragdollTimer = 0;
+    slot.stuckTimer = 0;
+    slot.stuckCheckX = sx;
+    slot.stuckCheckZ = sz;
     slot.gunGroup.visible = false;
     slot.muzzleFlash.visible = false;
     slot.heartIconGroup.visible = false;
@@ -1652,14 +2009,23 @@ export class CrowdRebellionManager {
       if (slot.trophyGroup) slot.trophyGroup.visible = true;
     }
     slot.shadowDisc.visible = true;
+    slot.root.visible = true;
 
     slot.root.position.set(sx, gy, sz);
     slot.root.rotation.set(0, yaw, 0);
     slot.bodyPivot.position.set(0, slot.baseHipY, 0);
     slot.bodyPivot.rotation.set(0, 0, 0);
+    slot.torsoPivot.position.set(0, 0, 0);
+    slot.torsoPivot.rotation.set(0, 0, 0);
+    slot.headPivot.position.set(0, 3.32, 0);
+    slot.headPivot.rotation.set(0, 0, 0);
+    slot.armLPivot.position.set(-1.02, 2.66, 0);
     slot.armLPivot.rotation.set(0, 0, 0);
+    slot.armRPivot.position.set(1.02, 2.66, 0);
     slot.armRPivot.rotation.set(0, 0, 0);
+    slot.legLPivot.position.set(-0.4, 0, 0);
     slot.legLPivot.rotation.set(0, 0, 0);
+    slot.legRPivot.position.set(0.4, 0, 0);
     slot.legRPivot.rotation.set(0, 0, 0);
   }
 
@@ -1833,7 +2199,7 @@ export class CrowdRebellionManager {
         Math.abs(b.pos.x) > 360 ||
         Math.abs(b.pos.z) > 360 ||
         b.pos.y < -10 ||
-        b.pos.y > 200
+        b.pos.y > 280
       ) {
         b.active = false;
         b.mesh.visible = false;
@@ -1997,7 +2363,7 @@ export class CrowdRebellionManager {
   }
 
   public update(
-    dt: number,
+    rawDt: number,
     elapsed: number,
     birdPos: THREE.Vector3,
     camera: THREE.Camera,
@@ -2007,6 +2373,7 @@ export class CrowdRebellionManager {
     birdVelocity: THREE.Vector3 = _zeroVec
   ): void {
     if (this.disposed) return;
+    const dt = Math.min(0.05, Math.max(0.0001, rawDt));
 
     if (this.screamCooldown > 0) this.screamCooldown = Math.max(0, this.screamCooldown - dt);
     if (this.globalEnemyFireCooldown > 0) {
@@ -2115,10 +2482,28 @@ export class CrowdRebellionManager {
       this.events.emit('crowd:intimidatePrompt', { available: intimidateAvail });
     }
 
-    // 1. Update all 45 pooled crowd NPCs
+    // Gradual 1-by-1 offscreen refill of missing crowd slots (1 NPC every 3 seconds, never exceeding 26)
+    if (this.pendingRefillQueue.length > 0) {
+      this.refillTimer -= dt;
+      if (this.refillTimer <= 0) {
+        this.refillTimer = NPC_REFILL_INTERVAL_SEC;
+        const refillIdx = this.pendingRefillQueue.shift();
+        if (refillIdx !== undefined && this.slots[refillIdx]?.state === 'waiting_refill') {
+          this.recycleRagdollOffscreen(this.slots[refillIdx], birdPos, camera);
+        }
+      }
+    } else {
+      this.refillTimer = NPC_REFILL_INTERVAL_SEC;
+    }
+
+    // 1. Update all 26 pooled crowd NPCs
     const camPos = camera.position;
     for (let i = 0; i < this.slots.length; i++) {
       const slot = this.slots[i];
+
+      if (slot.state === 'waiting_refill') {
+        continue;
+      }
 
       if (slot.intimidateCooldown > 0) {
         slot.intimidateCooldown = Math.max(0, slot.intimidateCooldown - dt);
@@ -2139,43 +2524,71 @@ export class CrowdRebellionManager {
       if (slot.state === 'ragdoll') {
         slot.shadowDisc.visible = false;
         slot.ragdollTimer += dt;
-        slot.ragdollVel.y -= 28.0 * dt;
-        slot.ragdollPos.addScaledVector(slot.ragdollVel, dt);
 
-        if (slot.ragdollPos.y <= slot.groundY) {
-          slot.ragdollPos.y = slot.groundY;
-          if (slot.ragdollVel.y < -2.2) {
-            slot.ragdollVel.y = -slot.ragdollVel.y * 0.28;
-          } else {
-            slot.ragdollVel.y = 0;
+        if (slot.ragdollPopApart) {
+          // 30% Goofy Toy Mannequin Pop-Apart Physics (6 limbs/head/torso bouncing & spinning on ground)
+          for (let p = 0; p < slot.popPieces.length; p++) {
+            const piece = slot.popPieces[p];
+            piece.vel.y -= 30.0 * dt;
+            piece.pos.addScaledVector(piece.vel, dt);
+            if (piece.pos.y <= piece.floorOffsetY) {
+              piece.pos.y = piece.floorOffsetY;
+              if (piece.vel.y < -1.8) {
+                piece.vel.y = -piece.vel.y * 0.58;
+              } else {
+                piece.vel.y = 0;
+              }
+              piece.vel.x *= Math.max(0, 1 - 3.6 * dt);
+              piece.vel.z *= Math.max(0, 1 - 3.6 * dt);
+              piece.rotVel.multiplyScalar(Math.max(0, 1 - 3.2 * dt));
+            }
+            piece.rot.x += piece.rotVel.x * dt;
+            piece.rot.y += piece.rotVel.y * dt;
+            piece.rot.z += piece.rotVel.z * dt;
+            piece.pivot.position.copy(piece.pos);
+            piece.pivot.rotation.set(piece.rot.x, piece.rot.y, piece.rot.z);
           }
-          slot.ragdollVel.x *= Math.max(0, 1 - 6.8 * dt);
-          slot.ragdollVel.z *= Math.max(0, 1 - 6.8 * dt);
-          slot.ragdollPitchVel *= Math.max(0, 1 - 5.5 * dt);
-          slot.ragdollRollVel *= Math.max(0, 1 - 5.5 * dt);
-          slot.ragdollYawVel *= Math.max(0, 1 - 5.5 * dt);
+        } else {
+          // 70% Exaggerated Bouncy Slapstick Ragdoll with windmilling limbs
+          slot.ragdollVel.y -= 28.0 * dt;
+          slot.ragdollPos.addScaledVector(slot.ragdollVel, dt);
+
+          if (slot.ragdollPos.y <= slot.groundY) {
+            slot.ragdollPos.y = slot.groundY;
+            if (slot.ragdollVel.y < -1.8) {
+              slot.ragdollVel.y = -slot.ragdollVel.y * 0.56;
+            } else {
+              slot.ragdollVel.y = 0;
+            }
+            slot.ragdollVel.x *= Math.max(0, 1 - 4.2 * dt);
+            slot.ragdollVel.z *= Math.max(0, 1 - 4.2 * dt);
+            slot.ragdollPitchVel *= Math.max(0, 1 - 3.8 * dt);
+            slot.ragdollRollVel *= Math.max(0, 1 - 3.8 * dt);
+            slot.ragdollYawVel *= Math.max(0, 1 - 3.8 * dt);
+          }
+
+          slot.ragdollPitch += slot.ragdollPitchVel * dt;
+          slot.ragdollRoll += slot.ragdollRollVel * dt;
+          slot.yaw += slot.ragdollYawVel * dt;
+
+          slot.root.position.copy(slot.ragdollPos);
+          slot.root.rotation.y = slot.yaw;
+
+          const flailSpin = slot.ragdollTimer * 15.5 + slot.index;
+          slot.bodyPivot.position.y =
+            slot.baseHipY * 0.45 + Math.abs(Math.sin(flailSpin * 0.35)) * 0.55;
+          slot.bodyPivot.rotation.set(slot.ragdollPitch, 0, slot.ragdollRoll * 0.75);
+          slot.headPivot.rotation.set(Math.sin(flailSpin) * 0.45, 0, Math.cos(flailSpin) * 0.45);
+          slot.armLPivot.rotation.set(flailSpin, 0, -1.35);
+          slot.armRPivot.rotation.set(-flailSpin * 1.1, 0, 1.35);
+          slot.legLPivot.rotation.set(-flailSpin * 0.85, 0, -0.45);
+          slot.legRPivot.rotation.set(flailSpin * 0.85, 0, 0.45);
         }
-
-        slot.ragdollPitch = Math.min(Math.PI * 0.48, slot.ragdollPitch + slot.ragdollPitchVel * dt);
-        slot.ragdollRoll += slot.ragdollRollVel * dt;
-        slot.yaw += slot.ragdollYawVel * dt;
-
-        slot.root.position.copy(slot.ragdollPos);
-        slot.root.rotation.y = slot.yaw;
-
-        // Collapse body to ground & flail limbs during knockout
-        const collapseT = Math.min(1, slot.ragdollTimer * 2.8);
-        slot.bodyPivot.position.y = slot.baseHipY * (1 - collapseT * 0.78) + 0.35;
-        slot.bodyPivot.rotation.set(slot.ragdollPitch, 0, slot.ragdollRoll * 0.55);
-        slot.armLPivot.rotation.set(-1.35 * collapseT, 0, -0.85 * collapseT);
-        slot.armRPivot.rotation.set(-1.15 * collapseT, 0, 0.92 * collapseT);
-        slot.legLPivot.rotation.set(1.25 * collapseT, 0, -0.24 * collapseT);
-        slot.legRPivot.rotation.set(1.42 * collapseT, 0, 0.28 * collapseT);
 
         // Smooth opacity fade-out across the final 0.8s (2.2s -> 3.0s)
         if (slot.ragdollTimer >= RAGDOLL_FADE_START && slot.ragdollMatIdx >= 0) {
           const fadeMat = this.ragdollMatPool[slot.ragdollMatIdx];
-          if (slot.torsoHeadMesh.material !== fadeMat) {
+          if (slot.torsoMesh.material !== fadeMat) {
             this.setSlotMaterial(slot, fadeMat);
           }
           const fadeFrac = Math.min(
@@ -2186,7 +2599,7 @@ export class CrowdRebellionManager {
         }
 
         if (slot.ragdollTimer >= RAGDOLL_DURATION) {
-          this.recycleRagdollOffscreen(slot, birdPos, camera);
+          this.retireRagdollToPendingRefill(slot);
         }
         continue;
       }
@@ -2227,6 +2640,9 @@ export class CrowdRebellionManager {
         if (horizDistSq > aggroRadiusSq) {
           slot.state = 'walking';
           slot.extremeRage = false;
+          slot.stuckTimer = 0;
+          slot.stuckCheckX = slot.root.position.x;
+          slot.stuckCheckZ = slot.root.position.z;
           if (slot.rageAuraGroup) slot.rageAuraGroup.visible = false;
           slot.gunGroup.visible = false;
           slot.muzzleFlash.visible = false;
@@ -2242,15 +2658,19 @@ export class CrowdRebellionManager {
         if (advanceSpeed > 0.1) {
           const inv = 1 / horizDist;
           this.moveHumanXZ(slot, dx * inv, dz * inv, advanceSpeed * dt, tramX);
+          this.tickWalkStuckTimer(slot, dt);
           if (animateLimbs) {
             slot.gaitPhase += dt * 9.5;
             const stride = Math.sin(slot.gaitPhase) * 0.52;
             slot.legLPivot.rotation.x = stride;
             slot.legRPivot.rotation.x = -stride;
           }
-        } else if (animateLimbs) {
-          slot.legLPivot.rotation.x *= Math.max(0, 1 - dt * 10);
-          slot.legRPivot.rotation.x *= Math.max(0, 1 - dt * 10);
+        } else {
+          this.resetWalkStuckTimer(slot);
+          if (animateLimbs) {
+            slot.legLPivot.rotation.x *= Math.max(0, 1 - dt * 10);
+            slot.legRPivot.rotation.x *= Math.max(0, 1 - dt * 10);
+          }
         }
 
         if (animateLimbs) {
@@ -2287,6 +2707,7 @@ export class CrowdRebellionManager {
         slot.cryTimer -= dt;
         const sprintSpeed = slot.walkSpeed * 2.18;
         this.moveHumanXZ(slot, slot.fleeDirX, slot.fleeDirZ, sprintSpeed * dt, tramX);
+        this.tickWalkStuckTimer(slot, dt);
         slot.yaw = Math.atan2(slot.fleeDirX, slot.fleeDirZ);
         slot.root.rotation.y = slot.yaw;
 
@@ -2320,6 +2741,7 @@ export class CrowdRebellionManager {
         slot.fleeTimer -= dt;
         const speed = slot.walkSpeed * 1.78;
         this.moveHumanXZ(slot, slot.fleeDirX, slot.fleeDirZ, speed * dt, tramX);
+        this.tickWalkStuckTimer(slot, dt);
         slot.yaw = Math.atan2(slot.fleeDirX, slot.fleeDirZ);
         slot.root.rotation.y = slot.yaw;
 
@@ -2341,6 +2763,7 @@ export class CrowdRebellionManager {
 
       // Admired shoulder-perched state: NPC stops walking, waves happily, and displays floating heart icon
       if (i === currentPerchedSlotIdx) {
+        this.resetWalkStuckTimer(slot);
         slot.heartIconGroup.visible = true;
         slot.heartIconGroup.position.y = 5.25 + Math.sin(elapsed * 4.2) * 0.22;
         slot.heartIconGroup.rotation.y = elapsed * 2.4;
@@ -2388,15 +2811,19 @@ export class CrowdRebellionManager {
             if (toGoalDist > 0.35) {
               const stepDist = Math.min(toGoalDist, slot.walkSpeed * 1.15 * dt);
               this.moveHumanXZ(slot, toGoalX / toGoalDist, toGoalZ / toGoalDist, stepDist, tramX);
+              this.tickWalkStuckTimer(slot, dt);
               if (animateLimbs) {
                 slot.gaitPhase += dt * slot.walkSpeed * 1.4;
                 const stride = Math.sin(slot.gaitPhase) * 0.38;
                 slot.legLPivot.rotation.x = stride;
                 slot.legRPivot.rotation.x = -stride;
               }
-            } else if (animateLimbs) {
-              slot.legLPivot.rotation.x *= Math.max(0, 1 - dt * 10);
-              slot.legRPivot.rotation.x *= Math.max(0, 1 - dt * 10);
+            } else {
+              this.resetWalkStuckTimer(slot);
+              if (animateLimbs) {
+                slot.legLPivot.rotation.x *= Math.max(0, 1 - dt * 10);
+                slot.legRPivot.rotation.x *= Math.max(0, 1 - dt * 10);
+              }
             }
             const lookPartnerYaw = Math.atan2(
               partner.root.position.x - slot.root.position.x,
@@ -2417,6 +2844,9 @@ export class CrowdRebellionManager {
             if (toGoalDist > 0.25) {
               const stepDist = Math.min(toGoalDist, catchupSpeed * dt);
               this.moveHumanXZ(slot, toGoalX / toGoalDist, toGoalZ / toGoalDist, stepDist, tramX);
+              this.tickWalkStuckTimer(slot, dt);
+            } else {
+              this.resetWalkStuckTimer(slot);
             }
             let yawDiff = partner.yaw - slot.yaw;
             while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
@@ -2438,6 +2868,7 @@ export class CrowdRebellionManager {
         }
 
         if (partnerPerched && !isCompanion) {
+          this.resetWalkStuckTimer(slot);
           if (animateLimbs) {
             slot.legLPivot.rotation.x *= Math.max(0, 1 - dt * 10);
             slot.legRPivot.rotation.x *= Math.max(0, 1 - dt * 10);
@@ -2449,6 +2880,7 @@ export class CrowdRebellionManager {
         }
 
         if (slot.couplePauseTimer > 0) {
+          this.resetWalkStuckTimer(slot);
           slot.couplePauseTimer = Math.max(0, slot.couplePauseTimer - dt);
           if (partner && partner.state === 'walking') {
             const lookPartnerYaw = Math.atan2(
@@ -2473,6 +2905,7 @@ export class CrowdRebellionManager {
 
         slot.coupleWalkTimer -= dt;
         if (slot.coupleWalkTimer <= 0) {
+          this.resetWalkStuckTimer(slot);
           slot.coupleWalkTimer = 9.0 + (slot.coupleId % 3) * 2.0;
           slot.couplePauseTimer = 3.4 + (slot.coupleId % 2) * 1.1;
           continue;
@@ -2491,7 +2924,7 @@ export class CrowdRebellionManager {
         const prevIdx = slot.currentNodeIdx;
         slot.currentNodeIdx = arrivedIdx;
 
-        // Couples prefer staying near park/cafe nodes; solo crowd patrol everywhere
+        // Couples prefer staying near park/cafe nodes; solo crowd patrol everywhere (skipping blocked edges)
         if (slot.coupleId >= 0) {
           slot.targetNodeIdx = this.pickCoupleNeighbor(
             arrivedIdx,
@@ -2502,8 +2935,23 @@ export class CrowdRebellionManager {
           const neighbors = arrivedNode.neighbors;
           if (neighbors.length > 0) {
             let chosen = neighbors[(slot.index + Math.floor(elapsed * 3)) % neighbors.length];
-            if (neighbors.length > 1 && chosen === prevIdx) {
-              chosen = neighbors[(neighbors.indexOf(chosen) + 1) % neighbors.length];
+            for (let k = 0; k < neighbors.length; k++) {
+              const candIdx = neighbors[(neighbors.indexOf(chosen) + k) % neighbors.length];
+              const candNode = WALK_GRAPH[candIdx];
+              if (
+                (neighbors.length === 1 || candIdx !== prevIdx) &&
+                this.isValidSpawnCoord(candNode.x, candNode.z) &&
+                !this.physics.isSegmentBlockedByNoWalkZone(
+                  arrivedNode.x,
+                  arrivedNode.z,
+                  candNode.x,
+                  candNode.z,
+                  0.72
+                )
+              ) {
+                chosen = candIdx;
+                break;
+              }
             }
             slot.targetNodeIdx = chosen;
           } else {
@@ -2527,6 +2975,7 @@ export class CrowdRebellionManager {
         const dirX = dx / dist;
         const dirZ = dz / dist;
         this.moveHumanXZ(slot, dirX, dirZ, slot.walkSpeed * speedMul * dt, tramX);
+        this.tickWalkStuckTimer(slot, dt);
 
         const desiredYaw = Math.atan2(dirX, dirZ);
         let yawDiff = desiredYaw - slot.yaw;
@@ -2555,6 +3004,27 @@ export class CrowdRebellionManager {
     // 2. Step pooled enemy bullets and floating Respect/XP orbs
     this.stepEnemyBullets(dt, birdPos);
     this.stepRespectOrbs(dt, elapsed, birdPos);
+  }
+
+  private resetWalkStuckTimer(slot: CrowdHumanSlot): void {
+    slot.stuckTimer = 0;
+    slot.stuckCheckX = slot.root.position.x;
+    slot.stuckCheckZ = slot.root.position.z;
+  }
+
+  private tickWalkStuckTimer(slot: CrowdHumanSlot, dt: number): void {
+    const mdx = slot.root.position.x - slot.stuckCheckX;
+    const mdz = slot.root.position.z - slot.stuckCheckZ;
+    if (mdx * mdx + mdz * mdz >= STUCK_DIST_THRESHOLD_SQ) {
+      slot.stuckTimer = 0;
+      slot.stuckCheckX = slot.root.position.x;
+      slot.stuckCheckZ = slot.root.position.z;
+    } else {
+      slot.stuckTimer += dt;
+      if (slot.stuckTimer >= STUCK_DURATION_SEC) {
+        this.recoverStuckSlot(slot);
+      }
+    }
   }
 
   public findIntimidateCandidate(birdPos: THREE.Vector3, camera: THREE.Camera): number {
@@ -2669,7 +3139,8 @@ export class CrowdRebellionManager {
     this.disposed = true;
 
     for (let i = 0; i < this.styleGeos.length; i++) {
-      this.styleGeos[i].torsoHeadGeo.dispose();
+      this.styleGeos[i].torsoGeo.dispose();
+      this.styleGeos[i].headGeo.dispose();
       this.styleGeos[i].armGeo.dispose();
       this.styleGeos[i].legGeo.dispose();
     }

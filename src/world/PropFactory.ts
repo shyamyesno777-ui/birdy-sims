@@ -65,7 +65,7 @@ export class PropFactory {
   private createPropMesh(
     geo: THREE.BufferGeometry,
     mat: THREE.Material = this.mat,
-    castShadow = true
+    castShadow = false
   ): THREE.Mesh {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = castShadow;

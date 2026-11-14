@@ -42,6 +42,9 @@ export interface ClosedWindowBarrier {
 
 const GROUND_FOOT_CLEARANCE = 0.384;
 const PERCH_FOOT_CLEARANCE = 0.352;
+const FLIGHT_CEILING_Y = 226.8; // +40% over original 162.0 SU ceiling
+const FLIGHT_CEILING_FADE_START_Y = 221.2; // +40% over original 158.0 SU fade onset
+const FLIGHT_CEILING_FADE_SPAN = 30.8; // +40% over original 22.0 SU fade span
 const LEDGE_PROBE_OFFSETS: ReadonlyArray<readonly [number, number]> = [
   [0.65, 0],
   [-0.65, 0],
@@ -185,6 +188,7 @@ export class SparrowController {
 
   public mode: BirdMode = 'perched';
   public dizzyState: DizzyPoseState = 'none';
+  private stunTimer = 0;
   private tumbleTimer = 0;
   private tumbleDuration = 0.36;
   private tumbleDir = 1;
@@ -618,6 +622,9 @@ export class SparrowController {
     diving: boolean;
     mobileClimb: number;
   } {
+    if (this.stunTimer > 0) {
+      return { forward: 0, right: 0, braking: false, diving: false, mobileClimb: 0 };
+    }
     let forward = 0;
     let right = 0;
     if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) forward += 1;
@@ -826,7 +833,7 @@ export class SparrowController {
    * with an adjacent vertical drop-off, even if not explicitly registered in PerchSystem.
    */
   private tryAutoPerchOnNearbyLedge(maxSnapRadius: number): boolean {
-    if (this.perchIgnoreTimer > 0 || this.dizzyState !== 'none') return false;
+    if (this.perchIgnoreTimer > 0 || this.dizzyState !== 'none' || this.stunTimer > 0) return false;
 
     const birdInAtelier = isInsideAtelier(this.position);
     const perchHit = this.perches.findNearestPerch(
@@ -995,18 +1002,28 @@ export class SparrowController {
       this.velocity.y =
         hitNormal.y < -0.35
           ? Math.min(this.velocity.y, -2.0)
-          : Math.max(this.velocity.y, 2.6);
+          : Math.max(this.velocity.y, 2.0);
     } else {
       const push = Math.max(3.6, Math.min(6.2, impactSpeed * 0.65));
       this.velocity.x = hitNormal.x * push;
       this.velocity.z = hitNormal.z * push;
+      this.velocity.y = 2.6;
+      this.mode = 'flying';
+      this.isHopAirborne = false;
       this.hopPhase = 0.22;
+      if (this.stunTimer <= 0) {
+        this.stunTimer = 1.0;
+        this.tumbleDuration = 1.0;
+        this.tumbleTimer = 1.0;
+        this.tumbleDir = Math.random() < 0.5 ? 1 : -1;
+        this.consumeBufferedJump();
+      }
     }
   }
 
   /**
    * Unbreakable resilient collision rebound: reflects the bird off walls, roofs, ceilings,
-   * or steep terrain with playful feather burst & aerial tumble while preserving instant flight control.
+   * or steep terrain with playful feather burst & 1.0s ragdoll stun/tumble under gravity.
    */
   public bounceOffSurface(
     hitPoint: THREE.Vector3,
@@ -1036,9 +1053,12 @@ export class SparrowController {
 
     if (hitNormal.y < -0.35) {
       this.velocity.y = Math.min(this.velocity.y, -Math.max(2.6, impactSpeed * 0.42));
-    } else {
-      const liftFloor = Math.min(6.4, 2.8 + impactSpeed * 0.18);
+    } else if (hitNormal.y > 0.55) {
+      const liftFloor = Math.min(5.8, 2.6 + impactSpeed * 0.16);
       this.velocity.y = Math.max(this.velocity.y, liftFloor);
+    } else {
+      // Wall or tree trunk collision: slight rebound pop so gravity pulls the bird naturally downward
+      this.velocity.y = Math.min(2.8, Math.max(-2.0, this.velocity.y * 0.35 + 1.6));
     }
 
     const totalSpeed = this.velocity.length();
@@ -1050,7 +1070,15 @@ export class SparrowController {
     this.flapAnimTimer = Math.max(this.flapAnimTimer, 0.42);
     this.position.addScaledVector(hitNormal, 0.34);
 
-    if (impactSpeed > 6.5) {
+    if (!this.tutorialSafeZone) {
+      if (this.stunTimer <= 0) {
+        this.stunTimer = 1.0;
+        this.tumbleDuration = 1.0;
+        this.tumbleTimer = 1.0;
+        this.tumbleDir = Math.random() < 0.5 ? 1 : -1;
+      }
+      this.consumeBufferedJump();
+    } else if (impactSpeed > 6.5) {
       this.tumbleDuration = Math.min(0.46, 0.24 + impactSpeed * 0.012);
       this.tumbleTimer = this.tumbleDuration;
       this.tumbleDir = Math.random() < 0.5 ? 1 : -1;
@@ -1140,6 +1168,7 @@ export class SparrowController {
     if (frozen) {
       this.inputEnabled = false;
       this.dizzyState = 'none';
+      this.stunTimer = 0;
       this.tumbleTimer = 0;
       this.bonkTimer = 0;
       this.velocity.set(0, 0, 0);
@@ -1235,6 +1264,7 @@ export class SparrowController {
     this.bankAngle = 0;
     this.pitchAngle = 0;
     this.dizzyState = 'none';
+    this.stunTimer = 0;
     this.mode = 'grounded';
     this.isHopAirborne = false;
   }
@@ -1253,6 +1283,10 @@ export class SparrowController {
     if (this.chirpOpen > 0) this.chirpOpen = Math.max(0, this.chirpOpen - clampedDt * 3.6);
     if (this.bonkTimer > 0) this.bonkTimer = Math.max(0, this.bonkTimer - clampedDt);
     if (this.bonkCooldown > 0) this.bonkCooldown = Math.max(0, this.bonkCooldown - clampedDt);
+    if (this.stunTimer > 0) {
+      this.stunTimer = Math.max(0, this.stunTimer - clampedDt);
+      this.consumeBufferedJump();
+    }
     if (this.tumbleTimer > 0) this.tumbleTimer = Math.max(0, this.tumbleTimer - clampedDt);
     if (this.fireCooldown > 0) this.fireCooldown = Math.max(0, this.fireCooldown - clampedDt);
     if (this.gunShockCooldown > 0) this.gunShockCooldown = Math.max(0, this.gunShockCooldown - clampedDt);
@@ -2302,152 +2336,170 @@ export class SparrowController {
     this.hopPhase = 0;
     const weightPenalty = this.carriedProp ? this.carriedProp.beakWeight * 2.2 : 0;
 
-    // 1. Measured Wingbeat Climb Burst (`Space` tap with 0.10s input buffer + 0.12s ledge coyote time)
-    if (this.hasBufferedJump() && (this.flapCooldown <= 0 || this.coyoteTimer > 0)) {
-      const usedCoyote = this.coyoteTimer > 0;
+    if (this.stunTimer > 0) {
+      // Strict 1.0s crash stun / ragdoll control lock: ignore all directional & flap inputs,
+      // tumbling and falling naturally under gravity before controls smoothly re-engage.
       this.consumeBufferedJump();
-      this.coyoteTimer = 0;
-
-      const ceilingFade = Math.max(0.18, Math.min(1.0, (158 - this.position.y) / 22));
-      const staminaFactor = usedCoyote
-        ? 1.0
-        : 0.38 + 0.62 * Math.min(1.0, this.flightStamina / 0.26);
-      const flapLift = (6.8 - weightPenalty * 0.55) * ceilingFade * staminaFactor;
-      this.velocity.y = Math.min(11.5, Math.max(this.velocity.y * 0.45 + flapLift * 0.82, flapLift));
-
-      if (!usedCoyote) {
-        this.flightStamina = Math.max(0.0, this.flightStamina - 0.12);
-      }
-      this.boundCycleTimer = 0.0;
-      this.wingTuckAmount = 0.0;
-
-      const fwd = this.getForwardVector(_birdFwd);
-      const speedH = Math.hypot(this.velocity.x, this.velocity.z);
-      if (speedH < 15.8) {
-        this.velocity.x += fwd.x * (3.1 * staminaFactor);
-        this.velocity.z += fwd.z * (3.1 * staminaFactor);
-      }
-
-      this.flapAnimTimer = 0.82;
-      this.flapCooldown = 0.17;
-      this.flightWingbeatTimer = 0.135;
-      this.audio.playWingFlap(staminaFactor);
-      if (this.flightStamina < 0.18) {
-        this.fx.spawnBurst(this.position, 2, false, 1.4);
-      }
-    }
-
-    // 2. Banking, Turning & Pitch Aerodynamics
-    let turnInput = axes.right;
-    if (!this.isMobileInputActive() && axes.forward > 0.1 && Math.abs(axes.right) < 0.05) {
-      let camDiff = cameraYaw - this.yaw;
-      while (camDiff > Math.PI) camDiff -= Math.PI * 2;
-      while (camDiff < -Math.PI) camDiff += Math.PI * 2;
-      turnInput = Math.max(-1, Math.min(1, -camDiff * 1.4));
-    }
-
-    const turnRate = axes.braking ? 3.5 : 2.65;
-    this.yaw -= turnInput * turnRate * dt;
-    this.bankAngle += (turnInput - this.bankAngle) * Math.min(1, dt * 7.5);
-
-    const fwdX = Math.sin(this.yaw);
-    const fwdZ = Math.cos(this.yaw);
-    let hSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-    const holdingFlapCruise =
-      (this.keys.has('Space') || axes.mobileClimb > 0.05) && this.flightStamina > 0.05;
-
-    if (axes.braking) {
-      this.wingTuckAmount = 0;
-      hSpeed = Math.max(1.5, hSpeed * Math.pow(0.06, dt));
-      if (this.velocity.y < -5.2) {
-        this.velocity.y += (-5.2 - this.velocity.y) * Math.min(1, dt * 9.5);
-      } else {
-        this.velocity.y = Math.max(-5.2, this.velocity.y - 9.0 * dt);
-      }
-      this.pitchAngle += (-0.58 - this.pitchAngle) * Math.min(1, dt * 8);
-    } else if (axes.diving) {
-      this.wingTuckAmount = 0.45;
-      this.velocity.y = Math.max(-22.0, this.velocity.y - (22.0 + weightPenalty) * dt);
-      hSpeed = Math.min(22.5, hSpeed + 9.5 * dt);
-      this.pitchAngle += (0.72 - this.pitchAngle) * Math.min(1, dt * 8);
-    } else if (holdingFlapCruise && this.flapAnimTimer <= 0.45) {
-      const prevBound = this.boundCycleTimer;
-      this.boundCycleTimer = (this.boundCycleTimer + dt * 2.4) % 1.0;
-      if (this.boundCycleTimer < prevBound) {
-        this.flightWingbeatTimer = 0.135;
-        this.audio.playWingFlap(0.55);
-      }
-
-      this.flightStamina = Math.max(0.0, this.flightStamina - dt * 0.14);
-      const targetCruise = 12.8 - weightPenalty * 0.7;
-      const speedDragRate = hSpeed > targetCruise ? 1.4 : 3.8;
-      hSpeed += (targetCruise - hSpeed) * Math.min(1, dt * speedDragRate);
-
-      if (this.boundCycleTimer < 0.58) {
-        this.wingTuckAmount = 0.0;
-        this.flapAnimTimer = Math.max(this.flapAnimTimer, 0.24);
-        const burstLift =
-          (2.8 + axes.mobileClimb * 2.8 - weightPenalty * 0.65) *
-          (0.45 + 0.55 * this.flightStamina);
-        if (this.velocity.y < -8.4) {
-          const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
-          const shedDown = Math.max(0, nextVy - this.velocity.y);
-          this.velocity.y = nextVy;
-          hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
-        } else {
-          this.velocity.y += (burstLift - this.velocity.y) * Math.min(1, dt * 4.5);
-        }
-      } else {
-        this.wingTuckAmount = 0.65;
-        this.flapAnimTimer = 0.0;
-        if (this.velocity.y < -8.4) {
-          const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
-          const shedDown = Math.max(0, nextVy - this.velocity.y);
-          this.velocity.y = nextVy;
-          hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
-        } else {
-          this.velocity.y = Math.max(-8.2, this.velocity.y - (13.5 + weightPenalty) * dt);
-        }
-      }
-
-      const climbRatio = Math.max(-0.75, Math.min(0.75, -this.velocity.y / 12.0));
-      this.pitchAngle += (climbRatio - this.pitchAngle) * Math.min(1, dt * 7);
+      this.wingTuckAmount = 0.25;
+      this.yaw += this.tumbleDir * 2.8 * dt;
+      this.bankAngle += (this.tumbleDir * 0.65 - this.bankAngle) * Math.min(1, dt * 6.0);
+      this.pitchAngle += (0.55 - this.pitchAngle) * Math.min(1, dt * 6.0);
+      this.velocity.x *= Math.pow(0.32, dt);
+      this.velocity.z *= Math.pow(0.32, dt);
+      this.velocity.y = Math.max(-22.0, this.velocity.y - (18.5 + weightPenalty) * dt);
     } else {
-      // Natural glide / dive-to-glide swoop pullout
-      this.wingTuckAmount = 0.0;
-      const targetCruise = axes.forward > 0.1 ? 11.4 : Math.max(6.2, hSpeed * Math.pow(0.62, dt));
-      const dragRate = hSpeed > 13.0 ? 1.25 : 3.0;
-      hSpeed += (targetCruise - hSpeed) * Math.min(1, dt * dragRate);
+      // 1. Measured Wingbeat Climb Burst (`Space` tap with 0.10s input buffer + 0.12s ledge coyote time)
+      if (this.hasBufferedJump() && (this.flapCooldown <= 0 || this.coyoteTimer > 0)) {
+        const usedCoyote = this.coyoteTimer > 0;
+        this.consumeBufferedJump();
+        this.coyoteTimer = 0;
 
-      if (this.velocity.y < -8.4) {
-        const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
-        const shedDown = Math.max(0, nextVy - this.velocity.y);
-        this.velocity.y = nextVy;
-        hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
-      } else {
-        const glideGravity = 12.4 + weightPenalty;
-        const minSink = -8.4 - weightPenalty * 0.5;
-        this.velocity.y = Math.max(minSink, this.velocity.y - glideGravity * dt);
+        const ceilingFade = Math.max(
+          0.18,
+          Math.min(1.0, (FLIGHT_CEILING_FADE_START_Y - this.position.y) / FLIGHT_CEILING_FADE_SPAN)
+        );
+        const staminaFactor = usedCoyote
+          ? 1.0
+          : 0.38 + 0.62 * Math.min(1.0, this.flightStamina / 0.26);
+        const flapLift = (6.8 - weightPenalty * 0.55) * ceilingFade * staminaFactor;
+        this.velocity.y = Math.min(11.5, Math.max(this.velocity.y * 0.45 + flapLift * 0.82, flapLift));
+
+        if (!usedCoyote) {
+          this.flightStamina = Math.max(0.0, this.flightStamina - 0.12);
+        }
+        this.boundCycleTimer = 0.0;
+        this.wingTuckAmount = 0.0;
+
+        const fwd = this.getForwardVector(_birdFwd);
+        const speedH = Math.hypot(this.velocity.x, this.velocity.z);
+        if (speedH < 15.8) {
+          this.velocity.x += fwd.x * (3.1 * staminaFactor);
+          this.velocity.z += fwd.z * (3.1 * staminaFactor);
+        }
+
+        this.flapAnimTimer = 0.82;
+        this.flapCooldown = 0.17;
+        this.flightWingbeatTimer = 0.135;
+        this.audio.playWingFlap(staminaFactor);
+        if (this.flightStamina < 0.18) {
+          this.fx.spawnBurst(this.position, 2, false, 1.4);
+        }
       }
 
-      const climbRatio = Math.max(-0.78, Math.min(0.78, -this.velocity.y / 11.5));
-      this.pitchAngle += (climbRatio - this.pitchAngle) * Math.min(1, dt * 6.5);
+      // 2. Banking, Turning & Pitch Aerodynamics
+      let turnInput = axes.right;
+      if (!this.isMobileInputActive() && axes.forward > 0.1 && Math.abs(axes.right) < 0.05) {
+        let camDiff = cameraYaw - this.yaw;
+        while (camDiff > Math.PI) camDiff -= Math.PI * 2;
+        while (camDiff < -Math.PI) camDiff += Math.PI * 2;
+        turnInput = Math.max(-1, Math.min(1, -camDiff * 1.4));
+      }
+
+      const turnRate = axes.braking ? 3.5 : 2.65;
+      this.yaw -= turnInput * turnRate * dt;
+      this.bankAngle += (turnInput - this.bankAngle) * Math.min(1, dt * 7.5);
+
+      const fwdX = Math.sin(this.yaw);
+      const fwdZ = Math.cos(this.yaw);
+      let hSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+      const holdingFlapCruise =
+        (this.keys.has('Space') || axes.mobileClimb > 0.05) && this.flightStamina > 0.05;
+
+      if (axes.braking) {
+        this.wingTuckAmount = 0;
+        hSpeed = Math.max(1.5, hSpeed * Math.pow(0.06, dt));
+        if (this.velocity.y < -5.2) {
+          this.velocity.y += (-5.2 - this.velocity.y) * Math.min(1, dt * 9.5);
+        } else {
+          this.velocity.y = Math.max(-5.2, this.velocity.y - 9.0 * dt);
+        }
+        this.pitchAngle += (-0.58 - this.pitchAngle) * Math.min(1, dt * 8);
+      } else if (axes.diving) {
+        this.wingTuckAmount = 0.45;
+        this.velocity.y = Math.max(-22.0, this.velocity.y - (22.0 + weightPenalty) * dt);
+        hSpeed = Math.min(22.5, hSpeed + 9.5 * dt);
+        this.pitchAngle += (0.72 - this.pitchAngle) * Math.min(1, dt * 8);
+      } else if (holdingFlapCruise && this.flapAnimTimer <= 0.45) {
+        const prevBound = this.boundCycleTimer;
+        this.boundCycleTimer = (this.boundCycleTimer + dt * 2.4) % 1.0;
+        if (this.boundCycleTimer < prevBound) {
+          this.flightWingbeatTimer = 0.135;
+          this.audio.playWingFlap(0.55);
+        }
+
+        this.flightStamina = Math.max(0.0, this.flightStamina - dt * 0.14);
+        const targetCruise = 12.8 - weightPenalty * 0.7;
+        const speedDragRate = hSpeed > targetCruise ? 1.4 : 3.8;
+        hSpeed += (targetCruise - hSpeed) * Math.min(1, dt * speedDragRate);
+
+        if (this.boundCycleTimer < 0.58) {
+          this.wingTuckAmount = 0.0;
+          this.flapAnimTimer = Math.max(this.flapAnimTimer, 0.24);
+          const burstLift =
+            (2.8 + axes.mobileClimb * 2.8 - weightPenalty * 0.65) *
+            (0.45 + 0.55 * this.flightStamina);
+          if (this.velocity.y < -8.4) {
+            const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
+            const shedDown = Math.max(0, nextVy - this.velocity.y);
+            this.velocity.y = nextVy;
+            hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
+          } else {
+            this.velocity.y += (burstLift - this.velocity.y) * Math.min(1, dt * 4.5);
+          }
+        } else {
+          this.wingTuckAmount = 0.65;
+          this.flapAnimTimer = 0.0;
+          if (this.velocity.y < -8.4) {
+            const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
+            const shedDown = Math.max(0, nextVy - this.velocity.y);
+            this.velocity.y = nextVy;
+            hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
+          } else {
+            this.velocity.y = Math.max(-8.2, this.velocity.y - (13.5 + weightPenalty) * dt);
+          }
+        }
+
+        const climbRatio = Math.max(-0.75, Math.min(0.75, -this.velocity.y / 12.0));
+        this.pitchAngle += (climbRatio - this.pitchAngle) * Math.min(1, dt * 7);
+      } else {
+        // Natural glide / dive-to-glide swoop pullout
+        this.wingTuckAmount = 0.0;
+        const targetCruise = axes.forward > 0.1 ? 11.4 : Math.max(6.2, hSpeed * Math.pow(0.62, dt));
+        const dragRate = hSpeed > 13.0 ? 1.25 : 3.0;
+        hSpeed += (targetCruise - hSpeed) * Math.min(1, dt * dragRate);
+
+        if (this.velocity.y < -8.4) {
+          const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
+          const shedDown = Math.max(0, nextVy - this.velocity.y);
+          this.velocity.y = nextVy;
+          hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
+        } else {
+          const glideGravity = 12.4 + weightPenalty;
+          const minSink = -8.4 - weightPenalty * 0.5;
+          this.velocity.y = Math.max(minSink, this.velocity.y - glideGravity * dt);
+        }
+
+        const climbRatio = Math.max(-0.78, Math.min(0.78, -this.velocity.y / 11.5));
+        this.pitchAngle += (climbRatio - this.pitchAngle) * Math.min(1, dt * 6.5);
+      }
+
+      const curDirX = hSpeed > 0.01 ? this.velocity.x / hSpeed : fwdX;
+      const curDirZ = hSpeed > 0.01 ? this.velocity.z / hSpeed : fwdZ;
+      const steerBlend = Math.min(1, dt * 7.5);
+      _nextDir2.set(
+        curDirX + (fwdX - curDirX) * steerBlend,
+        curDirZ + (fwdZ - curDirZ) * steerBlend
+      );
+      if (_nextDir2.lengthSq() > 0.0001) _nextDir2.normalize();
+      this.velocity.x = _nextDir2.x * hSpeed;
+      this.velocity.z = _nextDir2.y * hSpeed;
     }
 
-    const curDirX = hSpeed > 0.01 ? this.velocity.x / hSpeed : fwdX;
-    const curDirZ = hSpeed > 0.01 ? this.velocity.z / hSpeed : fwdZ;
-    const steerBlend = Math.min(1, dt * 7.5);
-    _nextDir2.set(
-      curDirX + (fwdX - curDirX) * steerBlend,
-      curDirZ + (fwdZ - curDirZ) * steerBlend
-    );
-    if (_nextDir2.lengthSq() > 0.0001) _nextDir2.normalize();
-    this.velocity.x = _nextDir2.x * hSpeed;
-    this.velocity.z = _nextDir2.y * hSpeed;
+    const hSpeed = Math.hypot(this.velocity.x, this.velocity.z);
 
     // Subtle rhythmic wingbeat foley while flying (active flap, airbrake flutter, or gentle flight flutter)
     this.flightWingbeatTimer -= dt;
-    if (this.flightWingbeatTimer <= 0 && !axes.diving && this.wingTuckAmount < 0.42) {
+    if (this.stunTimer <= 0 && this.flightWingbeatTimer <= 0 && !axes.diving && this.wingTuckAmount < 0.42) {
       if (this.flapAnimTimer > 0.01) {
         this.flightWingbeatTimer = 0.078;
         this.audio.playFlightWingbeat(0.42 + 0.28 * Math.min(1.0, this.flapAnimTimer / 0.82));
@@ -2462,8 +2514,8 @@ export class SparrowController {
       }
     }
 
-    // 3. Thermal Updraft Lift
-    const thermalLift = this.physics.sampleUpdraftLift(this.position);
+    // 3. Thermal Updraft Lift (disabled while stunned so the bird falls under gravity)
+    const thermalLift = this.stunTimer > 0 ? 0 : this.physics.sampleUpdraftLift(this.position);
     if (thermalLift > 0) {
       this.wingTuckAmount = 0.0;
       this.flightStamina = Math.min(1.0, this.flightStamina + dt * 0.95);
@@ -2495,8 +2547,24 @@ export class SparrowController {
           }
           const impactSpeed = this.velocity.length();
 
-          // Unbreakable high-speed dive/roof bounce: playfully rebound back into flight with tumble
-          if (!this.tutorialSafeZone && !axes.braking && impactSpeed > 15.0) {
+          if (this.stunTimer > 0) {
+            // While stunned & tumbling under gravity, damp bounce along the ground until stunTimer expires
+            this.position.set(hit.point.x, hit.point.y + GROUND_FOOT_CLEARANCE + 0.04, hit.point.z);
+            if (this.velocity.y < -3.2) {
+              this.velocity.y = -this.velocity.y * 0.36;
+              this.velocity.x *= 0.65;
+              this.velocity.z *= 0.65;
+            } else {
+              this.velocity.y = 0;
+              this.velocity.x *= Math.pow(0.06, dt);
+              this.velocity.z *= Math.pow(0.06, dt);
+            }
+          } else if (
+            !this.tutorialSafeZone &&
+            !axes.braking &&
+            (impactSpeed > 12.5 || this.velocity.y < -9.5)
+          ) {
+            // Unbreakable high-speed dive/ground bounce: rebound with 1.0s stun & tumble
             this.position.set(hit.point.x, hit.point.y + GROUND_FOOT_CLEARANCE + 0.14, hit.point.z);
             this.bounceOffSurface(hit.point, hit.normal, hit.body, impactSpeed, 0.58);
           } else {
@@ -2611,8 +2679,8 @@ export class SparrowController {
     }
 
     this.position.addScaledVector(this.velocity, dt);
-    if (this.position.y > 162.0) {
-      this.position.y = 162.0;
+    if (this.position.y > FLIGHT_CEILING_Y) {
+      this.position.y = FLIGHT_CEILING_Y;
       if (this.velocity.y > 0) this.velocity.y = 0;
     }
 
@@ -2625,7 +2693,7 @@ export class SparrowController {
       this.position.z,
       this.position.y
     );
-    if (this.velocity.y < 5.2 && this.perchIgnoreTimer <= 0) {
+    if (this.velocity.y < 5.2 && this.perchIgnoreTimer <= 0 && this.stunTimer <= 0) {
       let searchR = axes.braking ? 2.15 : hSpeed < 11.5 ? 1.72 : 1.35;
       if (basinAtXZ && this.position.y < basinAtXZ.surfaceY + 1.25 && !axes.braking) {
         const toCenterX = basinAtXZ.center.x - this.position.x;
@@ -2673,7 +2741,11 @@ export class SparrowController {
         this.position.y < skimFloorHit.point.y + GROUND_FOOT_CLEARANCE
       ) {
         this.position.y = skimFloorHit.point.y + GROUND_FOOT_CLEARANCE;
-        if (this.velocity.y <= 1.2) {
+        if (this.stunTimer > 0) {
+          this.velocity.y = Math.max(0, -this.velocity.y * 0.35);
+          this.velocity.x *= Math.pow(0.08, dt);
+          this.velocity.z *= Math.pow(0.08, dt);
+        } else if (this.velocity.y <= 1.2) {
           const impactSpeed = Math.hypot(this.velocity.x, this.velocity.y, this.velocity.z);
           this.velocity.y = 0;
           this.isHopAirborne = false;
@@ -2700,10 +2772,16 @@ export class SparrowController {
     } else if (this.position.y < -0.25) {
       this.position.y = GROUND_FOOT_CLEARANCE;
       if (this.velocity.y < -6.5) {
-        this.velocity.y = Math.max(5.2, -this.velocity.y * 0.56);
-        this.tumbleDuration = 0.28;
-        this.tumbleTimer = 0.28;
-        this.tumbleDir = Math.random() < 0.5 ? 1 : -1;
+        this.velocity.y = Math.max(4.2, -this.velocity.y * 0.46);
+        if (!this.tutorialSafeZone && this.stunTimer <= 0) {
+          this.stunTimer = 1.0;
+          this.tumbleDuration = 1.0;
+          this.tumbleTimer = 1.0;
+          this.tumbleDir = Math.random() < 0.5 ? 1 : -1;
+          this.consumeBufferedJump();
+        }
+      } else if (this.stunTimer > 0) {
+        this.velocity.y = 0;
       } else {
         this.velocity.y = 0;
         this.isHopAirborne = false;
@@ -3488,10 +3566,10 @@ export class SparrowController {
       slot.age += dt;
       if (
         slot.age > BULLET_MAX_AGE ||
-        Math.abs(slot.pos.x) > 220 ||
-        Math.abs(slot.pos.z) > 220 ||
+        Math.abs(slot.pos.x) > 360 ||
+        Math.abs(slot.pos.z) > 360 ||
         slot.pos.y < -15 ||
-        slot.pos.y > 220
+        slot.pos.y > 280
       ) {
         slot.active = false;
         slot.mesh.visible = false;

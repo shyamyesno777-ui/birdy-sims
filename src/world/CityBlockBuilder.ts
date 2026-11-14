@@ -3,10 +3,15 @@ import * as CANNON from 'cannon-es';
 import { PALETTE } from '../rendering/Palette.ts';
 import {
   createPastelMaterial,
-  createFoliageSwayMaterial,
   createWaterShimmerMaterial,
   createFountainFlowMaterial,
   createUnlitPastelFXMaterial,
+  SHARED_TREE_LAMBERT_MAT,
+  SHARED_BUILDING_LAMBERT_MAT,
+  SHARED_ASPHALT_ROAD_MAT,
+  SHARED_PLAZA_STONE_MAT,
+  SHARED_LAMP_GLOW_MAT,
+  SHARED_WARM_WINDOW_MAT,
   storybookUniforms,
 } from '../rendering/StorybookMaterial.ts';
 import {
@@ -86,7 +91,7 @@ export interface BuiltWorldHandles {
   lightDistrictLantern: (index: number) => void;
   spawnHiddenNewspaperCoin: () => void;
   launchPaperAirplane: () => void;
-  updateAnimatedProps: (dt: number, elapsed: number) => void;
+  updateAnimatedProps: (dt: number, elapsed: number, camera?: THREE.Camera) => void;
 
   // Mischief & Deed Event Hooks
   onCoffeeCupToppled?: () => void;
@@ -130,6 +135,9 @@ const _tramSparkPos = new THREE.Vector3();
 const _lanternOffsetA = new THREE.Vector3();
 const _lanternOffsetB = new THREE.Vector3();
 const _lanternEuler = new THREE.Euler();
+const _cullFrustum = new THREE.Frustum();
+const _cullProjMat = new THREE.Matrix4();
+const _cullSphere = new THREE.Sphere();
 
 function quadrantOf(x: number, z: number): QuadrantKey {
   if (z >= 0) {
@@ -152,14 +160,23 @@ function quadrantOf(x: number, z: number): QuadrantKey {
 export class CityBlockBuilder {
   private root = new THREE.Group();
   private mat: THREE.NodeMaterial;
-  private foliageMat: THREE.NodeMaterial;
+  private buildingMat: THREE.Material = SHARED_BUILDING_LAMBERT_MAT;
+  private treeMat: THREE.Material = SHARED_TREE_LAMBERT_MAT;
   private waterMat: THREE.NodeMaterial;
   private glowGoldMat: THREE.NodeMaterial;
   private lanternOffMat: THREE.NodeMaterial;
   private propFactory: PropFactory;
   private townhouseCtx: TownhouseBuildContext;
+  private readonly distantCullables: Array<{
+    mesh: THREE.Mesh;
+    x: number;
+    z: number;
+    radius: number;
+  }> = [];
 
   private horizonParts: THREE.BufferGeometry[] = [];
+  private quadWarmWindows: THREE.BufferGeometry[] = [];
+  private lampGlowParts: THREE.BufferGeometry[] = [];
 
   // Cozy Proportional Brass Birdcage (`center = (-74.5, 34.00, 52.0)`, `cageR = 2.68 SU`, porcelain tray top `y = 34.00`)
   private cageBounds: CageKeepInBounds = {
@@ -427,23 +444,26 @@ export class CityBlockBuilder {
   ) {
     this.scene.add(this.root);
     this.mat = createPastelMaterial({ vertexColors: true });
-    this.foliageMat = createFoliageSwayMaterial(0.16, 1.55);
     this.waterMat = createWaterShimmerMaterial();
     this.glowGoldMat = createPastelMaterial({
       color: PALETTE.goldGlow,
       vertexColors: false,
       emissiveHex: PALETTE.goldGlow,
-      emissiveIntensity: 0.45,
+      emissiveIntensity: 0.92,
     });
     this.lanternOffMat = createPastelMaterial({
-      color: PALETTE.wallLimestone,
+      color: PALETTE.windowWarmLit,
       vertexColors: false,
+      emissiveHex: PALETTE.windowWarmLit,
+      emissiveIntensity: 0.48,
     });
 
     this.propFactory = new PropFactory(this.root, this.physics, this.mat, this.glowGoldMat);
     this.townhouseCtx = {
       root: this.root,
       mat: this.mat,
+      buildingMat: this.buildingMat,
+      collectWarmWindows: this.quadWarmWindows,
       physics: this.physics,
       perches: this.perches,
       createBouncyAwning: (id, center, halfExtents, stripeA, stripeB, bounceSpeed) =>
@@ -554,7 +574,7 @@ export class CityBlockBuilder {
           smoothSphere(0.34, hex, 16, 12, [1.4, 0.75, 0.9]),
           this.mat
         );
-        ornament.castShadow = true;
+        ornament.castShadow = false;
         ornament.receiveShadow = true;
         ornament.position.set(Math.cos(angle) * r, 0.48 + (index % 2) * 0.14, Math.sin(angle) * r);
         ornament.rotation.y = -angle;
@@ -583,7 +603,8 @@ export class CityBlockBuilder {
           new THREE.Vector3(-10.5, 4.8, 9.2)
         );
       },
-      updateAnimatedProps: (dt: number, elapsed: number) => this.updateAnimatedProps(dt, elapsed),
+      updateAnimatedProps: (dt: number, elapsed: number, camera?: THREE.Camera) =>
+        this.updateAnimatedProps(dt, elapsed, camera),
     };
 
     this.updateAnimatedProps(0.016, 0);
@@ -734,58 +755,115 @@ export class CityBlockBuilder {
       sw: [],
       se: [],
     };
+    const quadRoads: Record<QuadrantKey, THREE.BufferGeometry[]> = {
+      nw: [],
+      ne: [],
+      sw: [],
+      se: [],
+    };
+    const quadPlazas: Record<QuadrantKey, THREE.BufferGeometry[]> = {
+      nw: [],
+      ne: [],
+      sw: [],
+      se: [],
+    };
+
+    const ensureUvAttribute = (
+      geo: THREE.BufferGeometry,
+      count: number
+    ): THREE.BufferAttribute | null => {
+      if (!geo || count <= 0) return null;
+      let uvAttr = geo.getAttribute('uv') as THREE.BufferAttribute | undefined;
+      if (!uvAttr || uvAttr.count !== count || typeof uvAttr.setXY !== 'function') {
+        uvAttr = new THREE.BufferAttribute(new Float32Array(count * 2), 2);
+        geo.setAttribute('uv', uvAttr);
+      }
+      return uvAttr;
+    };
+
+    const addRoadSlab = (
+      qKey: QuadrantKey,
+      cx: number,
+      cz: number,
+      widthX: number,
+      depthZ: number,
+      dirAxis: 'x' | 'z'
+    ): void => {
+      const geo = transformGeo(rbox(widthX, 0.5, depthZ, 0.08, PALETTE.asphaltLavender, 1), {
+        pos: [cx, -0.22, cz],
+      });
+      try {
+        const posAttr = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
+        const count = posAttr ? posAttr.count : 0;
+        const uvAttr = ensureUvAttribute(geo, count);
+        if (posAttr && uvAttr && typeof uvAttr.setXY === 'function') {
+          for (let i = 0; i < count; i++) {
+            const vx = posAttr.getX(i);
+            const vz = posAttr.getZ(i);
+            if (dirAxis === 'x') {
+              const u = Math.max(0, Math.min(1, (vz - cz) / depthZ + 0.5));
+              const v = vx / 28.0;
+              uvAttr.setXY(i, u, v);
+            } else {
+              const u = Math.max(0, Math.min(1, (vx - cx) / widthX + 0.5));
+              const v = vz / 28.0;
+              uvAttr.setXY(i, u, v);
+            }
+          }
+          uvAttr.needsUpdate = true;
+          quadRoads[qKey].push(geo);
+        } else {
+          geo.deleteAttribute('uv');
+          quadGround[qKey].push(geo);
+        }
+      } catch {
+        geo.deleteAttribute('uv');
+        quadGround[qKey].push(geo);
+      }
+    };
+
+    const addPlazaSlab = (qKey: QuadrantKey, geo: THREE.BufferGeometry): void => {
+      try {
+        const posAttr = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
+        const count = posAttr ? posAttr.count : 0;
+        const uvAttr = ensureUvAttribute(geo, count);
+        if (posAttr && uvAttr && typeof uvAttr.setXY === 'function') {
+          for (let i = 0; i < count; i++) {
+            uvAttr.setXY(i, posAttr.getX(i) / 16.0, posAttr.getZ(i) / 16.0);
+          }
+          uvAttr.needsUpdate = true;
+          quadPlazas[qKey].push(geo);
+        } else {
+          geo.deleteAttribute('uv');
+          quadGround[qKey].push(geo);
+        }
+      } catch {
+        geo.deleteAttribute('uv');
+        quadGround[qKey].push(geo);
+      }
+    };
 
     // Main Asphalt Boulevards (`32 SU` wide, top `y = 0.03`) extended across full doubled city (`±320 SU`)
-    quadGround.sw.push(
-      transformGeo(rbox(320, 0.5, 32, 0.08, PALETTE.asphaltLavender, 1), {
-        pos: [-160, -0.22, 0],
-      })
-    );
-    quadGround.ne.push(
-      transformGeo(rbox(320, 0.5, 32, 0.08, PALETTE.asphaltLavender, 1), {
-        pos: [160, -0.22, 0],
-      })
-    );
-    quadGround.nw.push(
-      transformGeo(rbox(32, 0.5, 304, 0.08, PALETTE.asphaltLavender, 1), {
-        pos: [0, -0.22, 168],
-      })
-    );
-    quadGround.se.push(
-      transformGeo(rbox(32, 0.5, 304, 0.08, PALETTE.asphaltLavender, 1), {
-        pos: [0, -0.22, -168],
-      })
-    );
+    addRoadSlab('sw', -160, 0, 320, 32, 'x');
+    addRoadSlab('ne', 160, 0, 320, 32, 'x');
+    addRoadSlab('nw', 0, 168, 32, 304, 'z');
+    addRoadSlab('se', 0, -168, 32, 304, 'z');
 
     // Outer Ring Streets (`24 SU` wide, `x = ±228`, `z = ±224`, top `y = 0.03`) creating outer intersections
     for (const sx of [-1, 1] as const) {
       const qN: QuadrantKey = sx < 0 ? 'nw' : 'ne';
       const qS: QuadrantKey = sx < 0 ? 'sw' : 'se';
-      quadGround[qN].push(
-        transformGeo(rbox(24, 0.5, 302, 0.08, PALETTE.asphaltLavender, 1), {
-          pos: [sx * 228, -0.22, 167],
-        })
-      );
-      quadGround[qS].push(
-        transformGeo(rbox(24, 0.5, 302, 0.08, PALETTE.asphaltLavender, 1), {
-          pos: [sx * 228, -0.22, -167],
-        })
-      );
+      addRoadSlab(qN, sx * 228, 167, 24, 302, 'z');
+      addRoadSlab(qS, sx * 228, -167, 24, 302, 'z');
     }
     for (const sz of [-1, 1] as const) {
       for (const sx of [-1, 1] as const) {
         const qKey: QuadrantKey =
           sx < 0 ? (sz > 0 ? 'nw' : 'sw') : sz > 0 ? 'ne' : 'se';
         // Inner horizontal street wing (`|x| in [16..216]`)
-        quadGround[qKey].push(
-          transformGeo(rbox(200, 0.5, 24, 0.08, PALETTE.asphaltLavender, 1), {
-            pos: [sx * 116, -0.22, sz * 224],
-          }),
-          // Outer horizontal street wing (`|x| in [240..318]`)
-          transformGeo(rbox(78, 0.5, 24, 0.08, PALETTE.asphaltLavender, 1), {
-            pos: [sx * 279, -0.22, sz * 224],
-          })
-        );
+        addRoadSlab(qKey, sx * 116, sz * 224, 200, 24, 'x');
+        // Outer horizontal street wing (`|x| in [240..318]`)
+        addRoadSlab(qKey, sx * 279, sz * 224, 78, 24, 'x');
       }
     }
 
@@ -808,7 +886,8 @@ export class CityBlockBuilder {
               : PALETTE.plazaWarmStone;
 
       const addOuterPlaza = (cx: number, cz: number, w: number, d: number): void => {
-        quadGround[qKey].push(
+        addPlazaSlab(
+          qKey,
           transformGeo(rbox(w, 0.56, d, 0.22, stoneHex, 1), { pos: [cx, 0.0, cz] })
         );
         this.physics.addStaticBox(
@@ -862,13 +941,19 @@ export class CityBlockBuilder {
     }
 
     // NW Café & Boulangerie Sidewalk Plaza (`x: -154..-16, z: 16..154`, top `y = 0.28`) + Raised Rose Stone Terrace (`top = 0.35`)
-    quadGround.nw.push(
+    addPlazaSlab(
+      'nw',
       transformGeo(rbox(138, 0.56, 138, 0.24, PALETTE.plazaCream, 1), {
         pos: [-85, 0.0, 85],
-      }),
+      })
+    );
+    addPlazaSlab(
+      'nw',
       transformGeo(rbox(22, 0.14, 68, 0.06, PALETTE.plazaRoseStone, 1), {
         pos: [-28.5, 0.28, 54],
-      }),
+      })
+    );
+    quadGround.nw.push(
       transformGeo(rbox(138, 0.62, 1.2, 0.12, PALETTE.curbStone, 1), { pos: [-85, 0.06, 16.6] }),
       transformGeo(rbox(1.2, 0.62, 136.8, 0.12, PALETTE.curbStone, 1), { pos: [-16.6, 0.06, 85.6] })
     );
@@ -878,22 +963,34 @@ export class CityBlockBuilder {
     this.physics.addStaticBox(new THREE.Vector3(-16.6, 0.06, 85.6), new THREE.Vector3(0.6, 0.31, 68.4));
 
     // NE Botanical Park Plaza (`top = 0.28`), Meadow (`top = 0.35`), Diagonal Walk (`top = 0.40`), Stone Plazas (`top = 0.45`)
-    quadGround.ne.push(
+    addPlazaSlab(
+      'ne',
       transformGeo(rbox(138, 0.56, 138, 0.24, PALETTE.plazaSand, 1), {
         pos: [85, 0.0, 85],
-      }),
-      transformGeo(rbox(116, 0.14, 116, 0.1, PALETTE.grassMeadow, 1), {
-        pos: [84, 0.28, 84],
-      }),
+      })
+    );
+    addPlazaSlab(
+      'ne',
       transformGeo(rbox(10.5, 0.14, 62, 0.08, PALETTE.plazaCream, 1), {
         rot: [0, Math.PI * 0.25, 0],
         pos: [68, 0.33, 67],
-      }),
+      })
+    );
+    addPlazaSlab(
+      'ne',
       transformGeo(rcyl(19.5, 20.0, 0.18, PALETTE.plazaWarmStone, 28), {
         pos: [48, 0.36, 48],
-      }),
+      })
+    );
+    addPlazaSlab(
+      'ne',
       transformGeo(rcyl(16.0, 16.5, 0.18, PALETTE.plazaWarmStone, 24), {
         pos: [88, 0.36, 86],
+      })
+    );
+    quadGround.ne.push(
+      transformGeo(rbox(116, 0.14, 116, 0.1, PALETTE.grassMeadow, 1), {
+        pos: [84, 0.28, 84],
       }),
       transformGeo(rbox(138, 0.62, 1.2, 0.12, PALETTE.curbStone, 1), { pos: [85, 0.06, 16.6] }),
       transformGeo(rbox(1.2, 0.62, 136.8, 0.12, PALETTE.curbStone, 1), { pos: [16.6, 0.06, 85.6] })
@@ -912,19 +1009,31 @@ export class CityBlockBuilder {
     this.physics.addStaticBox(new THREE.Vector3(16.6, 0.06, 85.6), new THREE.Vector3(0.6, 0.31, 68.4));
 
     // SW North Quay & South Quay (`top = 0.28`) + Non-Overlapping Cobble Promenade Bands (`top = 0.35`)
-    quadGround.sw.push(
+    addPlazaSlab(
+      'sw',
       transformGeo(rbox(138, 0.56, 24, 0.22, PALETTE.plazaRoseStone, 1), {
         pos: [-85, 0.0, -28],
-      }),
+      })
+    );
+    addPlazaSlab(
+      'sw',
       transformGeo(rbox(138, 0.56, 86, 0.22, PALETTE.plazaCream, 1), {
         pos: [-85, 0.0, -111],
-      }),
+      })
+    );
+    addPlazaSlab(
+      'sw',
       transformGeo(rbox(94, 0.14, 12, 0.06, PALETTE.plazaRoseStone, 1), {
         pos: [-84, 0.28, -75.5],
-      }),
+      })
+    );
+    addPlazaSlab(
+      'sw',
       transformGeo(rbox(14, 0.14, 76, 0.06, PALETTE.plazaWarmStone, 1), {
         pos: [-25.5, 0.28, -108],
-      }),
+      })
+    );
+    quadGround.sw.push(
       transformGeo(rbox(138, 0.62, 1.2, 0.12, PALETTE.curbStone, 1), { pos: [-85, 0.06, -16.6] }),
       transformGeo(rbox(1.2, 0.62, 22.8, 0.12, PALETTE.curbStone, 1), { pos: [-16.6, 0.06, -28.6] }),
       transformGeo(rbox(1.2, 0.62, 86, 0.12, PALETTE.curbStone, 1), { pos: [-16.6, 0.06, -111] }),
@@ -946,16 +1055,25 @@ export class CityBlockBuilder {
     this.physics.addStaticBox(new THREE.Vector3(-16.6, 0.06, -111), new THREE.Vector3(0.6, 0.31, 43));
 
     // SE Farmers' Market & Clocktower Plaza (`top = 0.28`) + Non-Overlapping Stone Inlays (`top = 0.35` / `0.37`)
-    quadGround.se.push(
+    addPlazaSlab(
+      'se',
       transformGeo(rbox(138, 0.56, 138, 0.24, PALETTE.plazaWarmStone, 1), {
         pos: [85, 0.0, -85],
-      }),
+      })
+    );
+    addPlazaSlab(
+      'se',
       transformGeo(rbox(56, 0.14, 54, 0.1, PALETTE.plazaCream, 1), {
         pos: [48, 0.28, -74],
-      }),
+      })
+    );
+    addPlazaSlab(
+      'se',
       transformGeo(rcyl(18.5, 19.0, 0.16, PALETTE.plazaRoseStone, 24), {
         pos: [96, 0.29, -96],
-      }),
+      })
+    );
+    quadGround.se.push(
       transformGeo(rbox(138, 0.62, 1.2, 0.12, PALETTE.curbStone, 1), { pos: [85, 0.06, -16.6] }),
       transformGeo(rbox(1.2, 0.62, 136.8, 0.12, PALETTE.curbStone, 1), { pos: [16.6, 0.06, -85.6] })
     );
@@ -1010,11 +1128,43 @@ export class CityBlockBuilder {
     );
 
     for (const qKey of ['nw', 'ne', 'sw', 'se'] as const) {
-      const qMesh = new THREE.Mesh(mergeParts(quadGround[qKey]), this.mat);
-      qMesh.castShadow = false;
-      qMesh.receiveShadow = true;
-      qMesh.geometry.computeBoundingSphere();
-      this.root.add(qMesh);
+      if (quadGround[qKey].length > 0) {
+        const qMesh = new THREE.Mesh(mergeParts(quadGround[qKey]), this.mat);
+        qMesh.castShadow = false;
+        qMesh.receiveShadow = true;
+        qMesh.geometry.computeBoundingSphere();
+        this.root.add(qMesh);
+      }
+      if (quadRoads[qKey].length > 0) {
+        try {
+          const roadMesh = new THREE.Mesh(mergeParts(quadRoads[qKey]), SHARED_ASPHALT_ROAD_MAT);
+          roadMesh.castShadow = false;
+          roadMesh.receiveShadow = true;
+          roadMesh.geometry.computeBoundingSphere();
+          this.root.add(roadMesh);
+        } catch {
+          const fallbackRoadMesh = new THREE.Mesh(mergeParts(quadRoads[qKey]), this.mat);
+          fallbackRoadMesh.castShadow = false;
+          fallbackRoadMesh.receiveShadow = true;
+          fallbackRoadMesh.geometry.computeBoundingSphere();
+          this.root.add(fallbackRoadMesh);
+        }
+      }
+      if (quadPlazas[qKey].length > 0) {
+        try {
+          const plazaMesh = new THREE.Mesh(mergeParts(quadPlazas[qKey]), SHARED_PLAZA_STONE_MAT);
+          plazaMesh.castShadow = false;
+          plazaMesh.receiveShadow = true;
+          plazaMesh.geometry.computeBoundingSphere();
+          this.root.add(plazaMesh);
+        } catch {
+          const fallbackPlazaMesh = new THREE.Mesh(mergeParts(quadPlazas[qKey]), this.mat);
+          fallbackPlazaMesh.castShadow = false;
+          fallbackPlazaMesh.receiveShadow = true;
+          fallbackPlazaMesh.geometry.computeBoundingSphere();
+          this.root.add(fallbackPlazaMesh);
+        }
+      }
     }
   }
 
@@ -1201,7 +1351,7 @@ export class CityBlockBuilder {
     );
 
     const tramMesh = new THREE.Mesh(mergeParts(parts), this.mat);
-    tramMesh.castShadow = true;
+    tramMesh.castShadow = false;
     tramMesh.receiveShadow = true;
     tramMesh.geometry.computeBoundingSphere();
     this.tramGroup.add(tramMesh);
@@ -1303,12 +1453,6 @@ export class CityBlockBuilder {
       transformGeo(rbox(1.1, 17.4, 44.0, 0.18, PALETTE.parisGreen, 1), {
         pos: [-37.9, 9.0, 52],
       }),
-      transformGeo(rbox(1.3, 12.2, 14.5, 0.12, PALETTE.windowWarmLit, 1), {
-        pos: [-37.8, 10.2, 37.8],
-      }),
-      transformGeo(rbox(1.3, 12.2, 14.5, 0.12, PALETTE.windowWarmLit, 1), {
-        pos: [-37.8, 10.2, 66.2],
-      }),
       transformGeo(rbox(1.35, 15.2, 7.2, 0.14, PALETTE.woodWalnut, 1), {
         pos: [-37.8, 7.9, 52.0],
       }),
@@ -1317,6 +1461,14 @@ export class CityBlockBuilder {
       }),
       transformGeo(rbox(1.1, 0.38, 38.4, 0.08, PALETTE.brassWarm, 1), {
         pos: [-37.65, 24.35, 52.0],
+      })
+    );
+    this.quadWarmWindows.push(
+      transformGeo(rbox(1.3, 12.2, 14.5, 0.12, PALETTE.windowWarmLit, 1), {
+        pos: [-37.8, 10.2, 37.8],
+      }),
+      transformGeo(rbox(1.3, 12.2, 14.5, 0.12, PALETTE.windowWarmLit, 1), {
+        pos: [-37.8, 10.2, 66.2],
       })
     );
 
@@ -3093,7 +3245,7 @@ export class CityBlockBuilder {
     );
 
     const cageMesh = new THREE.Mesh(mergeParts(cageParts), this.mat);
-    cageMesh.castShadow = true;
+    cageMesh.castShadow = false;
     cageMesh.receiveShadow = true;
     cageMesh.geometry.computeBoundingSphere();
     this.root.add(cageMesh);
@@ -3154,7 +3306,7 @@ export class CityBlockBuilder {
       );
     }
     const doorMesh = new THREE.Mesh(mergeParts(doorParts), this.mat);
-    doorMesh.castShadow = true;
+    doorMesh.castShadow = false;
     doorMesh.geometry.computeBoundingSphere();
     this.cageGateSlideGroup.add(doorMesh);
     this.cageDoorPivot.add(this.cageGateSlideGroup);
@@ -3541,7 +3693,7 @@ export class CityBlockBuilder {
         }),
       ];
       const fMesh = new THREE.Mesh(mergeParts(frameParts), this.mat);
-      fMesh.castShadow = true;
+      fMesh.castShadow = false;
       fMesh.geometry.computeBoundingSphere();
       leaf.add(fMesh);
 
@@ -3652,7 +3804,7 @@ export class CityBlockBuilder {
       this.mat
     );
     mugMesh.position.set(-26.5, 5.15, 33.4);
-    mugMesh.castShadow = true;
+    mugMesh.castShadow = false;
     mugMesh.receiveShadow = true;
     this.root.add(mugMesh);
     for (let s = 0; s < 8; s++) {
@@ -3672,7 +3824,7 @@ export class CityBlockBuilder {
     this.newspaperMesh = new THREE.Mesh(newspaperGeo, this.mat);
     this.newspaperMesh.position.set(-25.0, 5.23, 32.7);
     this.newspaperMesh.rotation.y = 0.35;
-    this.newspaperMesh.castShadow = true;
+    this.newspaperMesh.castShadow = false;
     this.newspaperMesh.receiveShadow = true;
     this.root.add(this.newspaperMesh);
 
@@ -3892,20 +4044,20 @@ export class CityBlockBuilder {
     );
 
     const atelierInteriorMesh = new THREE.Mesh(mergeParts(atelierInteriorParts), this.mat);
-    atelierInteriorMesh.castShadow = true;
+    atelierInteriorMesh.castShadow = false;
     atelierInteriorMesh.receiveShadow = true;
     atelierInteriorMesh.geometry.computeBoundingSphere();
     this.root.add(atelierInteriorMesh);
 
-    const nwStaticMesh = new THREE.Mesh(mergeParts(nwOutdoorParts), this.mat);
-    nwStaticMesh.castShadow = true;
+    const nwStaticMesh = new THREE.Mesh(mergeParts(nwOutdoorParts), this.buildingMat);
+    nwStaticMesh.castShadow = false;
     nwStaticMesh.receiveShadow = true;
     nwStaticMesh.geometry.computeBoundingSphere();
     this.root.add(nwStaticMesh);
 
     if (foliageParts.length > 0) {
-      const nwFoliageMesh = new THREE.Mesh(mergeParts(foliageParts), this.foliageMat);
-      nwFoliageMesh.castShadow = true;
+      const nwFoliageMesh = new THREE.Mesh(mergeParts(foliageParts), this.treeMat);
+      nwFoliageMesh.castShadow = false;
       nwFoliageMesh.receiveShadow = true;
       nwFoliageMesh.geometry.computeBoundingSphere();
       this.root.add(nwFoliageMesh);
@@ -4679,15 +4831,15 @@ export class CityBlockBuilder {
     const lantern1 = this.createDistrictLantern(new THREE.Vector3(24.0, 0.28, 24.0));
     this.districtLanternMeshes[1] = lantern1;
 
-    const neMesh = new THREE.Mesh(mergeParts(parts), this.mat);
-    neMesh.castShadow = true;
+    const neMesh = new THREE.Mesh(mergeParts(parts), this.buildingMat);
+    neMesh.castShadow = false;
     neMesh.receiveShadow = true;
     neMesh.geometry.computeBoundingSphere();
     this.root.add(neMesh);
 
     if (neFoliageParts.length > 0) {
-      const neFoliageMesh = new THREE.Mesh(mergeParts(neFoliageParts), this.foliageMat);
-      neFoliageMesh.castShadow = true;
+      const neFoliageMesh = new THREE.Mesh(mergeParts(neFoliageParts), this.treeMat);
+      neFoliageMesh.castShadow = false;
       neFoliageMesh.receiveShadow = true;
       neFoliageMesh.geometry.computeBoundingSphere();
       this.root.add(neFoliageMesh);
@@ -4815,6 +4967,10 @@ export class CityBlockBuilder {
       const halfSpan = 20.0;
       const segs = 11;
       const rise = 7.12;
+      // Register left/right bridge parapets & raised arch span as strict No-Walk Zones
+      this.physics.registerNoWalkBox('bridge_edge', bx - 4.85, zCenter, 1.15, halfSpan + 1.0, 0, true);
+      this.physics.registerNoWalkBox('bridge_edge', bx + 4.85, zCenter, 1.15, halfSpan + 1.0, 0, true);
+      this.physics.registerNoWalkBox('bridge_edge', bx, zCenter, 5.8, halfSpan + 0.6, 0, false);
 
       for (let i = 0; i < segs; i++) {
         const u = (i - (segs - 1) * 0.5) / ((segs - 1) * 0.5);
@@ -4878,7 +5034,9 @@ export class CityBlockBuilder {
       parts.push(
         transformGeo(rcyl(0.2, 0.26, 7.2, PALETTE.ironworkPlum, 10), {
           pos: [bx - 4.85, 11.2, zCenter],
-        }),
+        })
+      );
+      this.lampGlowParts.push(
         transformGeo(smoothSphere(0.72, PALETTE.windowWarmLit, 12, 10), {
           pos: [bx - 4.85, 15.0, zCenter],
         })
@@ -4967,7 +5125,7 @@ export class CityBlockBuilder {
         transformGeo(rcyl(0.32, 0.28, 0.45, PALETTE.tulipCoral, 10), { pos: [5.4, 3.55, -1.0] }),
       ];
       const bMesh = new THREE.Mesh(mergeParts(bParts), this.mat);
-      bMesh.castShadow = true;
+      bMesh.castShadow = false;
       bMesh.receiveShadow = true;
       bMesh.geometry.computeBoundingSphere();
       bg.add(bMesh);
@@ -5400,8 +5558,8 @@ export class CityBlockBuilder {
     const lantern2 = this.createDistrictLantern(new THREE.Vector3(-24.0, 0.28, -24.0));
     this.districtLanternMeshes[2] = lantern2;
 
-    const swMesh = new THREE.Mesh(mergeParts(parts), this.mat);
-    swMesh.castShadow = true;
+    const swMesh = new THREE.Mesh(mergeParts(parts), this.buildingMat);
+    swMesh.castShadow = false;
     swMesh.receiveShadow = true;
     swMesh.geometry.computeBoundingSphere();
     this.root.add(swMesh);
@@ -5422,7 +5580,7 @@ export class CityBlockBuilder {
     const bikeMesh = new THREE.Mesh(this.propFactory.getVintageBicycleGeometry(frameHex), this.mat);
     bikeMesh.position.copy(pos);
     bikeMesh.rotation.copy(bikeEuler);
-    bikeMesh.castShadow = true;
+    bikeMesh.castShadow = false;
     bikeMesh.receiveShadow = true;
     this.root.add(bikeMesh);
 
@@ -6407,8 +6565,8 @@ export class CityBlockBuilder {
     this.districtLanternMeshes[3] = lantern3;
     this.districtLanternMeshes[4] = lantern4;
 
-    const seMesh = new THREE.Mesh(mergeParts(parts), this.mat);
-    seMesh.castShadow = true;
+    const seMesh = new THREE.Mesh(mergeParts(parts), this.buildingMat);
+    seMesh.castShadow = false;
     seMesh.receiveShadow = true;
     seMesh.geometry.computeBoundingSphere();
     this.root.add(seMesh);
@@ -6515,15 +6673,31 @@ export class CityBlockBuilder {
     };
     const horizonFoliageParts: THREE.BufferGeometry[] = [];
 
+    // Register explicit continuous outer map boundary walls as strict No-Walk Zones
+    this.physics.registerNoWalkBox('outer_wall', 0, 322, 336, 10, 0, true);
+    this.physics.registerNoWalkBox('outer_wall', 0, -322, 336, 10, 0, true);
+    this.physics.registerNoWalkBox('outer_wall', 322, 0, 10, 336, 0, true);
+    this.physics.registerNoWalkBox('outer_wall', -322, 0, 10, 336, 0, true);
+
     perimeterHouses.forEach((ph, i) => {
-      buildDetailedTownhouse(
+      const houseMesh = buildDetailedTownhouse(
         {
           ...ph,
           id: `perimeter_house_${i}`,
         },
-        this.townhouseCtx,
-        quadStreet[quadrantOf(ph.center[0], ph.center[1])]
+        this.townhouseCtx
       );
+      if (houseMesh) {
+        houseMesh.frustumCulled = true;
+        houseMesh.matrixAutoUpdate = false;
+        houseMesh.updateMatrix();
+        this.distantCullables.push({
+          mesh: houseMesh,
+          x: ph.center[0],
+          z: ph.center[1],
+          radius: Math.hypot(ph.widthX, ph.depthZ) * 0.58 + 20,
+        });
+      }
     });
 
     // 4 Cylindrical Haussmann Corner Rotunda Towers & Copper Cupolas (`(±315, ±315)`, `top y = 144 SU`)
@@ -6669,7 +6843,9 @@ export class CityBlockBuilder {
         quadStreet.sw.push(
           transformGeo(rbox(0.5, 9.2, 4.4, 0.1, PALETTE.wallCreamTrim, 1), {
             pos: [-146.1, wy, wz],
-          }),
+          })
+        );
+        this.quadWarmWindows.push(
           transformGeo(rbox(0.6, 8.0, 3.4, 0.08, PALETTE.windowWarmLit, 1), {
             pos: [-146.0, wy, wz],
           })
@@ -6689,7 +6865,7 @@ export class CityBlockBuilder {
       'stone'
     );
 
-    // 18 Rolling Sunlit European Parkland Hills & Tapered Cypress Groves (`r = 405..495 SU`) -> `horizonHillsMesh` (`castShadow = false`)
+    // 18 Rolling Sunlit European Parkland Hills & Tapered Cypress Groves (`r = 405..495 SU`) -> individual fog/frustum-culled meshes (`castShadow = false`)
     for (let h = 0; h < 18; h++) {
       const ha = (h / 18) * Math.PI * 2 + 0.17;
       const hx = Math.cos(ha) * (405 + (h % 3) * 38);
@@ -6698,7 +6874,7 @@ export class CityBlockBuilder {
       const hillH = 18 + (h % 3) * 8;
       const hillHex = h % 2 === 0 ? PALETTE.grassMeadow : PALETTE.leafSage;
 
-      this.horizonParts.push(
+      const clusterParts: THREE.BufferGeometry[] = [
         transformGeo(
           smoothSphere(1.0, hillHex, 18, 12, [hillR, hillH, hillR * 0.88], {
             bottomAO: 0.14,
@@ -6708,20 +6884,18 @@ export class CityBlockBuilder {
             rot: [0, -ha, 0],
             pos: [hx, hillH * 0.32 - 3.0, hz],
           }
-        )
-      );
+        ),
+      ];
 
       for (const cOff of [-8.5, 7.5]) {
         const tx = hx + Math.sin(ha) * cOff;
         const tz = hz - Math.cos(ha) * cOff;
         const baseHillTop = hillH * 0.82 - 2.0;
         const treeCol = h % 3 === 0 ? PALETTE.ginkgoGold : PALETTE.leafDeep;
-        this.horizonParts.push(
+        clusterParts.push(
           transformGeo(rcyl(0.5, 0.75, 4.5, PALETTE.trunkBark, 8), {
             pos: [tx, baseHillTop + 1.8, tz],
-          })
-        );
-        horizonFoliageParts.push(
+          }),
           transformGeo(
             lathe(
               [
@@ -6741,21 +6915,23 @@ export class CityBlockBuilder {
           )
         );
       }
-    }
 
-    const horizonHillsMesh = new THREE.Mesh(mergeParts(this.horizonParts), this.mat);
-    horizonHillsMesh.castShadow = false;
-    horizonHillsMesh.receiveShadow = true;
-    horizonHillsMesh.geometry.computeBoundingSphere();
-    this.root.add(horizonHillsMesh);
-
-    if (horizonFoliageParts.length > 0) {
-      const horizonCypressMesh = new THREE.Mesh(mergeParts(horizonFoliageParts), this.foliageMat);
-      horizonCypressMesh.castShadow = false;
-      horizonCypressMesh.receiveShadow = true;
-      horizonCypressMesh.geometry.computeBoundingSphere();
-      this.root.add(horizonCypressMesh);
+      const hillClusterMesh = new THREE.Mesh(mergeParts(clusterParts), this.treeMat);
+      hillClusterMesh.castShadow = false;
+      hillClusterMesh.receiveShadow = true;
+      hillClusterMesh.frustumCulled = true;
+      hillClusterMesh.matrixAutoUpdate = false;
+      hillClusterMesh.updateMatrix();
+      hillClusterMesh.geometry.computeBoundingSphere();
+      this.root.add(hillClusterMesh);
+      this.distantCullables.push({
+        mesh: hillClusterMesh,
+        x: hx,
+        z: hz,
+        radius: hillR + 12,
+      });
     }
+    void horizonFoliageParts;
 
     // --- Enrich Outer Side Promenades Across NW, NE, SW & SE (`|x|, |z| = 96..146 SU`) ---
     const addOuterBench = (id: string, bx: number, bz: number, rotY: number): void => {
@@ -7321,13 +7497,39 @@ export class CityBlockBuilder {
       const trunkH = th * 0.44;
       const tree = buildOrganicTreeParts(th, bCol, bIdx + 20);
       const qKey = quadrantOf(btx, btz);
+      const isOuterTree = Math.abs(btx) > 155 || Math.abs(btz) > 155;
 
-      quadStreet[qKey].push(
-        transformGeo(rbox(4.6, 0.36, 4.6, 0.1, PALETTE.curbStone, 1), { pos: [btx, 0.42, btz] }),
-        transformGeo(rbox(3.8, 0.4, 3.8, 0.08, PALETTE.ironworkPlum, 1), { pos: [btx, 0.44, btz] }),
-        transformGeo(tree.woodGeo, { pos: [btx, 0.3, btz] })
-      );
-      quadFoliage[qKey].push(transformGeo(tree.foliageGeo, { pos: [btx, 0.3, btz] }));
+      const curbGeo = transformGeo(rbox(4.6, 0.36, 4.6, 0.1, PALETTE.curbStone, 1), {
+        pos: [btx, 0.42, btz],
+      });
+      const grateGeo = transformGeo(rbox(3.8, 0.4, 3.8, 0.08, PALETTE.ironworkPlum, 1), {
+        pos: [btx, 0.44, btz],
+      });
+      const woodGeo = transformGeo(tree.woodGeo, { pos: [btx, 0.3, btz] });
+      const leavesGeo = transformGeo(tree.foliageGeo, { pos: [btx, 0.3, btz] });
+
+      if (isOuterTree) {
+        const treeMesh = new THREE.Mesh(
+          mergeParts([curbGeo, grateGeo, woodGeo, leavesGeo]),
+          this.treeMat
+        );
+        treeMesh.castShadow = false;
+        treeMesh.receiveShadow = true;
+        treeMesh.frustumCulled = true;
+        treeMesh.matrixAutoUpdate = false;
+        treeMesh.updateMatrix();
+        treeMesh.geometry.computeBoundingSphere();
+        this.root.add(treeMesh);
+        this.distantCullables.push({
+          mesh: treeMesh,
+          x: btx,
+          z: btz,
+          radius: th * 0.65,
+        });
+      } else {
+        quadStreet[qKey].push(curbGeo, grateGeo, woodGeo);
+        quadFoliage[qKey].push(leavesGeo);
+      }
 
       this.physics.addStaticBox(
         new THREE.Vector3(btx, 0.43, btz),
@@ -7465,11 +7667,13 @@ export class CityBlockBuilder {
         transformGeo(rcyl(0.7, 0.98, 2.4, PALETTE.ironworkPlum, 10), { pos: [lx, 1.4, lz] }),
         transformGeo(rcyl(0.22, 0.38, 14.6, PALETTE.ironworkPlum, 8), { pos: [lx, 9.7, lz] }),
         transformGeo(rbox(2.7, 0.2, 0.2, 0.05, PALETTE.ironworkPlum, 1), { pos: [lx, 15.8, lz] }),
-        transformGeo(rcyl(0.82, 0.52, 1.55, PALETTE.windowWarmLit, 6), {
-          pos: [lx, 17.65, lz],
-        }),
         transformGeo(rcyl(0.14, 0.94, 0.65, PALETTE.roofCopperPatina, 6), {
           pos: [lx, 18.72, lz],
+        })
+      );
+      this.lampGlowParts.push(
+        transformGeo(rcyl(0.82, 0.52, 1.55, PALETTE.windowWarmLit, 6), {
+          pos: [lx, 17.65, lz],
         })
       );
       this.physics.addStaticCylinder(new THREE.Vector3(lx, 8.9, lz), 0.36, 0.8, 17.4, 8);
@@ -7567,19 +7771,35 @@ export class CityBlockBuilder {
 
     for (const qKey of ['nw', 'ne', 'sw', 'se'] as const) {
       if (quadStreet[qKey].length > 0) {
-        const streetQuadMesh = new THREE.Mesh(mergeParts(quadStreet[qKey]), this.mat);
-        streetQuadMesh.castShadow = true;
+        const streetQuadMesh = new THREE.Mesh(mergeParts(quadStreet[qKey]), this.buildingMat);
+        streetQuadMesh.castShadow = false;
         streetQuadMesh.receiveShadow = true;
         streetQuadMesh.geometry.computeBoundingSphere();
         this.root.add(streetQuadMesh);
       }
       if (quadFoliage[qKey].length > 0) {
-        const foliageQuadMesh = new THREE.Mesh(mergeParts(quadFoliage[qKey]), this.foliageMat);
-        foliageQuadMesh.castShadow = true;
+        const foliageQuadMesh = new THREE.Mesh(mergeParts(quadFoliage[qKey]), this.treeMat);
+        foliageQuadMesh.castShadow = false;
         foliageQuadMesh.receiveShadow = true;
         foliageQuadMesh.geometry.computeBoundingSphere();
         this.root.add(foliageQuadMesh);
       }
+    }
+
+    if (this.lampGlowParts.length > 0) {
+      const lampGlowMesh = new THREE.Mesh(mergeParts(this.lampGlowParts), SHARED_LAMP_GLOW_MAT);
+      lampGlowMesh.castShadow = false;
+      lampGlowMesh.receiveShadow = false;
+      lampGlowMesh.geometry.computeBoundingSphere();
+      this.root.add(lampGlowMesh);
+    }
+
+    if (this.quadWarmWindows.length > 0) {
+      const warmWinMesh = new THREE.Mesh(mergeParts(this.quadWarmWindows), SHARED_WARM_WINDOW_MAT);
+      warmWinMesh.castShadow = false;
+      warmWinMesh.receiveShadow = false;
+      warmWinMesh.geometry.computeBoundingSphere();
+      this.root.add(warmWinMesh);
     }
   }
 
@@ -7613,7 +7833,7 @@ export class CityBlockBuilder {
     pedestalGeo.computeBoundingSphere();
     const pedestal = new THREE.Mesh(pedestalGeo, this.mat);
     pedestal.position.copy(basePos);
-    pedestal.castShadow = true;
+    pedestal.castShadow = false;
     pedestal.receiveShadow = true;
     this.root.add(pedestal);
     this.physics.addStaticCylinder(
@@ -7636,14 +7856,14 @@ export class CityBlockBuilder {
     ]);
     capGeo.computeBoundingSphere();
     const capMesh = new THREE.Mesh(capGeo, this.mat);
-    capMesh.castShadow = true;
+    capMesh.castShadow = false;
     pivotGroup.add(capMesh);
 
     const globeGeo = rcyl(0.95, 0.62, 1.65, PALETTE.wallLimestone, 8);
     globeGeo.computeBoundingSphere();
     const globe = new THREE.Mesh(globeGeo, this.lanternOffMat);
     globe.position.set(0, -2.18, 0);
-    globe.castShadow = true;
+    globe.castShadow = false;
     pivotGroup.add(globe);
     this.root.add(pivotGroup);
 
@@ -7948,7 +8168,7 @@ export class CityBlockBuilder {
 
       const bulbGeo = mergeParts(bulbParts);
       bulbGeo.computeBoundingSphere();
-      const bulbMesh = new THREE.Mesh(bulbGeo, this.mat);
+      const bulbMesh: THREE.Mesh = new THREE.Mesh(bulbGeo, SHARED_LAMP_GLOW_MAT);
       bulbMesh.castShadow = false;
       this.root.add(bulbMesh);
 
@@ -8012,7 +8232,7 @@ export class CityBlockBuilder {
     });
 
     const wireMesh = new THREE.Mesh(mergeParts(parts), this.mat);
-    wireMesh.castShadow = true;
+    wireMesh.castShadow = false;
     wireMesh.receiveShadow = true;
     wireMesh.geometry.computeBoundingSphere();
     this.root.add(wireMesh);
@@ -8096,7 +8316,7 @@ export class CityBlockBuilder {
     }
 
     const m = new THREE.Mesh(mergeParts(parts), this.mat);
-    m.castShadow = true;
+    m.castShadow = false;
     m.receiveShadow = true;
     m.geometry.computeBoundingSphere();
     return m;
@@ -8135,7 +8355,7 @@ export class CityBlockBuilder {
     }
     const mesh = new THREE.Mesh(mergeParts(parts), this.mat);
     mesh.position.copy(center);
-    mesh.castShadow = true;
+    mesh.castShadow = false;
     mesh.receiveShadow = true;
     mesh.geometry.computeBoundingSphere();
     this.root.add(mesh);
@@ -8161,7 +8381,7 @@ export class CityBlockBuilder {
   ): void {
     const pole = new THREE.Mesh(this.propFactory.getCafeUmbrellaPoleGeometry(canopyY), this.mat);
     pole.position.set(groundBase.x, canopyY * 0.5, groundBase.z);
-    pole.castShadow = true;
+    pole.castShadow = false;
     pole.receiveShadow = true;
     this.root.add(pole);
 
@@ -8170,7 +8390,7 @@ export class CityBlockBuilder {
       this.mat
     );
     canopyMesh.position.set(groundBase.x, canopyY, groundBase.z);
-    canopyMesh.castShadow = true;
+    canopyMesh.castShadow = false;
     canopyMesh.receiveShadow = true;
     this.root.add(canopyMesh);
 
@@ -8187,8 +8407,32 @@ export class CityBlockBuilder {
     });
   }
 
-  private updateAnimatedProps(dt: number, elapsed: number): void {
+  private updateAnimatedProps(dt: number, elapsed: number, camera?: THREE.Camera): void {
     const clamped = Math.min(0.05, dt);
+    if (camera && this.distantCullables.length > 0) {
+      camera.updateMatrixWorld();
+      _cullProjMat.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      _cullFrustum.setFromProjectionMatrix(_cullProjMat);
+      const fogDensity =
+        this.scene.fog instanceof THREE.FogExp2 ? this.scene.fog.density : 0.00042;
+      const fogCullDist = Math.min(540, Math.max(260, 0.23 / Math.max(0.00042, fogDensity)));
+      const camX = camera.position.x;
+      const camZ = camera.position.z;
+
+      for (let i = 0; i < this.distantCullables.length; i++) {
+        const item = this.distantCullables[i];
+        const dx = item.x - camX;
+        const dz = item.z - camZ;
+        const maxDist = fogCullDist + item.radius;
+        if (dx * dx + dz * dz > maxDist * maxDist) {
+          item.mesh.visible = false;
+          continue;
+        }
+        _cullSphere.center.set(item.x, 38, item.z);
+        _cullSphere.radius = item.radius;
+        item.mesh.visible = _cullFrustum.intersectsSphere(_cullSphere);
+      }
+    }
     if (this.windowCreakCooldown > 0) {
       this.windowCreakCooldown = Math.max(0, this.windowCreakCooldown - clamped);
     }
@@ -8624,15 +8868,17 @@ export class CityBlockBuilder {
         ws.glowTimer = Math.max(0, ws.glowTimer - clamped);
         // Gentle shimmer flicker before settling back to warm lit
         ws.bulbMesh.material =
-          ws.glowTimer > 0.35 || Math.sin(elapsed * 28.0) > -0.2 ? this.glowGoldMat : this.mat;
+          ws.glowTimer > 0.35 || Math.sin(elapsed * 28.0) > -0.2
+            ? this.glowGoldMat
+            : SHARED_LAMP_GLOW_MAT;
       } else {
-        ws.bulbMesh.material = this.mat;
+        ws.bulbMesh.material = SHARED_LAMP_GLOW_MAT;
       }
       if (ws.glowTimer <= 0 && Math.abs(ws.amp) < 1e-3 && Math.abs(ws.vel) < 1e-3) {
         ws.amp = 0;
         ws.vel = 0;
         ws.bulbMesh.position.y = 0;
-        ws.bulbMesh.material = this.mat;
+        ws.bulbMesh.material = SHARED_LAMP_GLOW_MAT;
         ws.settled = true;
         const last = this.activeWireSpans.length - 1;
         if (i < last) this.activeWireSpans[i] = this.activeWireSpans[last];
@@ -8676,7 +8922,7 @@ export class CityBlockBuilder {
     });
     leftLeafGeo.computeBoundingSphere();
     const leftMesh = new THREE.Mesh(leftLeafGeo, this.mat);
-    leftMesh.castShadow = true;
+    leftMesh.castShadow = false;
     leftHinge.add(leftMesh);
     winGroup.add(leftHinge);
 
@@ -8687,7 +8933,7 @@ export class CityBlockBuilder {
     });
     rightLeafGeo.computeBoundingSphere();
     const rightMesh = new THREE.Mesh(rightLeafGeo, this.mat);
-    rightMesh.castShadow = true;
+    rightMesh.castShadow = false;
     rightHinge.add(rightMesh);
     winGroup.add(rightHinge);
 
@@ -8883,5 +9129,8 @@ export class CityBlockBuilder {
     this.shutterWindows.length = 0;
     this.wireSpanOsc.length = 0;
     this.streetlampPositions.length = 0;
+    this.distantCullables.length = 0;
+    this.quadWarmWindows.length = 0;
+    this.lampGlowParts.length = 0;
   }
 }

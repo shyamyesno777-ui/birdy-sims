@@ -39,100 +39,148 @@ const WEATHER_ORDER: readonly WeatherType[] = ['clear', 'breezy', 'rain', 'mist'
 
 const KEYFRAMES: readonly SkyKeyframe[] = [
   {
-    t: 0.0, // Dawn
-    zenith: new THREE.Color(PALETTE.skyZenithDawn),
-    mid: new THREE.Color(PALETTE.skyMidDawn),
-    horizon: new THREE.Color(PALETTE.skyHorizonDawn),
-    fog: new THREE.Color(PALETTE.fogDawn),
-    sunColor: new THREE.Color(0xffe7c2),
-    skyFill: new THREE.Color(0.38, 0.43, 0.56),
-    bounceFill: new THREE.Color(0.40, 0.33, 0.29),
-    hemiSky: new THREE.Color(PALETTE.skyMidDawn),
-    hemiGround: new THREE.Color(PALETTE.plazaWarmStone),
-    sunIntensity: 1.02,
-    hemiIntensity: 0.54,
-    night: 0.0,
-    dusk: 0.55,
+    t: 0.0, // Dawn Start (Soft peachy-pink sunrise glow, low east sun)
+    zenith: new THREE.Color(0x466ea8),
+    mid: new THREE.Color(0xc98aa2),
+    horizon: new THREE.Color(0xf7b99c),
+    fog: new THREE.Color(0xf0baa0),
+    sunColor: new THREE.Color(0xffb48a),
+    skyFill: new THREE.Color(0.39, 0.41, 0.56),
+    bounceFill: new THREE.Color(0.42, 0.33, 0.29),
+    hemiSky: new THREE.Color(0x8ea6d4),
+    hemiGround: new THREE.Color(0xb89382),
+    sunIntensity: 0.78,
+    hemiIntensity: 0.56,
+    night: 0.14,
+    dusk: 0.62,
   },
   {
-    t: 0.16, // Crisp Morning
+    t: 0.10, // Dawn Peak (Warm rose-peach sunrise glow)
+    zenith: new THREE.Color(0x3f73b0),
+    mid: new THREE.Color(0xc792a6),
+    horizon: new THREE.Color(0xf7c5a6),
+    fog: new THREE.Color(0xf2c6aa),
+    sunColor: new THREE.Color(0xffc99e),
+    skyFill: new THREE.Color(0.40, 0.44, 0.59),
+    bounceFill: new THREE.Color(0.42, 0.35, 0.30),
+    hemiSky: new THREE.Color(0x8cb3de),
+    hemiGround: new THREE.Color(0xb89b88),
+    sunIntensity: 1.02,
+    hemiIntensity: 0.60,
+    night: 0.0,
+    dusk: 0.42,
+  },
+  {
+    t: 0.22, // Early Midday (Crisp warm morning sunlight)
     zenith: new THREE.Color(PALETTE.skyZenithDay),
     mid: new THREE.Color(PALETTE.skyMidDay),
     horizon: new THREE.Color(PALETTE.skyHorizonDay),
     fog: new THREE.Color(PALETTE.fogDay),
-    sunColor: new THREE.Color(0xfff5e0),
-    skyFill: new THREE.Color(0.39, 0.46, 0.60),
-    bounceFill: new THREE.Color(0.38, 0.34, 0.30),
+    sunColor: new THREE.Color(0xffebd0),
+    skyFill: new THREE.Color(0.39, 0.47, 0.62),
+    bounceFill: new THREE.Color(0.40, 0.35, 0.30),
     hemiSky: new THREE.Color(PALETTE.skyMidDay),
     hemiGround: new THREE.Color(PALETTE.plazaWarmStone),
-    sunIntensity: 1.12,
-    hemiIntensity: 0.58,
+    sunIntensity: 1.18,
+    hemiIntensity: 0.62,
+    night: 0.0,
+    dusk: 0.06,
+  },
+  {
+    t: 0.44, // High Midday (Crisp warm overhead sunlight)
+    zenith: new THREE.Color(PALETTE.skyZenithDay),
+    mid: new THREE.Color(PALETTE.skyMidDay),
+    horizon: new THREE.Color(0xebf1f5),
+    fog: new THREE.Color(PALETTE.fogDay),
+    sunColor: new THREE.Color(0xfff1d6),
+    skyFill: new THREE.Color(0.40, 0.48, 0.63),
+    bounceFill: new THREE.Color(0.41, 0.36, 0.31),
+    hemiSky: new THREE.Color(PALETTE.skyMidDay),
+    hemiGround: new THREE.Color(PALETTE.plazaWarmStone),
+    sunIntensity: 1.24,
+    hemiIntensity: 0.64,
     night: 0.0,
     dusk: 0.0,
   },
   {
-    t: 0.42, // Golden Afternoon
+    t: 0.60, // Entering Golden Sunset (Warm golden-hour transition)
     zenith: new THREE.Color(PALETTE.skyZenithGolden),
     mid: new THREE.Color(PALETTE.skyMidGolden),
     horizon: new THREE.Color(PALETTE.skyHorizonGolden),
     fog: new THREE.Color(PALETTE.fogGolden),
-    sunColor: new THREE.Color(0xffe1aa),
-    skyFill: new THREE.Color(0.41, 0.43, 0.54),
-    bounceFill: new THREE.Color(0.42, 0.34, 0.28),
+    sunColor: new THREE.Color(0xffcf88),
+    skyFill: new THREE.Color(0.40, 0.44, 0.56),
+    bounceFill: new THREE.Color(0.43, 0.35, 0.28),
     hemiSky: new THREE.Color(PALETTE.skyMidGolden),
     hemiGround: new THREE.Color(PALETTE.plazaWarmStone),
-    sunIntensity: 1.14,
+    sunIntensity: 1.12,
     hemiIntensity: 0.58,
     night: 0.0,
-    dusk: 0.25,
+    dusk: 0.42,
   },
   {
-    t: 0.60, // Sunset / Dusk
+    t: 0.73, // Deep Golden Sunset (Deep orange-amber sunset & long stretching shadows)
     zenith: new THREE.Color(PALETTE.skyZenithSunset),
-    mid: new THREE.Color(PALETTE.skyMidSunset),
-    horizon: new THREE.Color(PALETTE.skyHorizonSunset),
-    fog: new THREE.Color(PALETTE.fogSunset),
-    sunColor: new THREE.Color(0xff9f68),
-    skyFill: new THREE.Color(0.35, 0.29, 0.45),
-    bounceFill: new THREE.Color(0.36, 0.26, 0.25),
-    hemiSky: new THREE.Color(PALETTE.skyMidSunset),
-    hemiGround: new THREE.Color(0x6b534b),
-    sunIntensity: 0.86,
-    hemiIntensity: 0.48,
-    night: 0.18,
+    mid: new THREE.Color(0xb85860),
+    horizon: new THREE.Color(0xf78c48),
+    fog: new THREE.Color(0xe6885a),
+    sunColor: new THREE.Color(0xff8444),
+    skyFill: new THREE.Color(0.35, 0.28, 0.44),
+    bounceFill: new THREE.Color(0.38, 0.25, 0.22),
+    hemiSky: new THREE.Color(0xa65b6a),
+    hemiGround: new THREE.Color(0x735046),
+    sunIntensity: 0.90,
+    hemiIntensity: 0.50,
+    night: 0.14,
     dusk: 1.0,
   },
   {
-    t: 0.74, // Starry Moonlit Night
+    t: 0.82, // Dusk Horizon (Sun dipping into twilight indigo-amber)
+    zenith: new THREE.Color(0x1b2147),
+    mid: new THREE.Color(0x4c3c6b),
+    horizon: new THREE.Color(0xb55d56),
+    fog: new THREE.Color(0x5c4666),
+    sunColor: new THREE.Color(0xff6f40),
+    skyFill: new THREE.Color(0.24, 0.25, 0.42),
+    bounceFill: new THREE.Color(0.22, 0.18, 0.24),
+    hemiSky: new THREE.Color(0x4b4c7a),
+    hemiGround: new THREE.Color(0x3a3548),
+    sunIntensity: 0.32,
+    hemiIntensity: 0.48,
+    night: 0.68,
+    dusk: 0.66,
+  },
+  {
+    t: 0.89, // Moonlit Night (Cool moonlit indigo/blue ambient tint)
     zenith: new THREE.Color(PALETTE.skyZenithNight),
     mid: new THREE.Color(PALETTE.skyMidNight),
-    horizon: new THREE.Color(PALETTE.skyHorizonNight),
-    fog: new THREE.Color(PALETTE.fogNight),
-    sunColor: new THREE.Color(0x9bb8f2), // Moonlit key tint
-    skyFill: new THREE.Color(0.16, 0.22, 0.37),
-    bounceFill: new THREE.Color(0.14, 0.15, 0.24),
-    hemiSky: new THREE.Color(PALETTE.skyMidNight),
-    hemiGround: new THREE.Color(0x283044),
-    sunIntensity: 0.52,
-    hemiIntensity: 0.44,
+    horizon: new THREE.Color(0x2b416e),
+    fog: new THREE.Color(0x1c2947),
+    sunColor: new THREE.Color(0x8eb0eb),
+    skyFill: new THREE.Color(0.18, 0.25, 0.43),
+    bounceFill: new THREE.Color(0.15, 0.18, 0.28),
+    hemiSky: new THREE.Color(0x324d8a),
+    hemiGround: new THREE.Color(0x1e2842),
+    sunIntensity: 0.0,
+    hemiIntensity: 0.56,
     night: 1.0,
     dusk: 0.0,
   },
   {
-    t: 0.90, // Late Night Pre-Dawn
-    zenith: new THREE.Color(PALETTE.skyZenithNight),
-    mid: new THREE.Color(PALETTE.skyMidNight),
-    horizon: new THREE.Color(0x3a4a6e),
-    fog: new THREE.Color(0x23304d),
-    sunColor: new THREE.Color(0xa6c0f5),
-    skyFill: new THREE.Color(0.18, 0.24, 0.39),
-    bounceFill: new THREE.Color(0.16, 0.17, 0.25),
-    hemiSky: new THREE.Color(PALETTE.skyMidNight),
-    hemiGround: new THREE.Color(0x2e3548),
-    sunIntensity: 0.54,
-    hemiIntensity: 0.45,
-    night: 0.92,
-    dusk: 0.12,
+    t: 0.96, // Late Night -> Pre-Dawn Horizon Glow
+    zenith: new THREE.Color(0x162247),
+    mid: new THREE.Color(0x364470),
+    horizon: new THREE.Color(0x785b7c),
+    fog: new THREE.Color(0x4a4668),
+    sunColor: new THREE.Color(0xff9c84),
+    skyFill: new THREE.Color(0.24, 0.29, 0.47),
+    bounceFill: new THREE.Color(0.22, 0.21, 0.28),
+    hemiSky: new THREE.Color(0x475c94),
+    hemiGround: new THREE.Color(0x3b3d54),
+    sunIntensity: 0.24,
+    hemiIntensity: 0.52,
+    night: 0.58,
+    dusk: 0.46,
   },
 ];
 
@@ -144,8 +192,8 @@ const _nightRainFog = new THREE.Color(0x1f2838);
 const _nightMistFog = new THREE.Color(0x283548);
 const _gradeClear = new THREE.Color(1.0, 1.0, 1.0);
 const _gradeRain = new THREE.Color(0.88, 0.93, 1.02);
-const _gradeNight = new THREE.Color(0.86, 0.91, 1.06);
-const _gradeDusk = new THREE.Color(1.05, 0.96, 0.91);
+const _gradeNight = new THREE.Color(0.85, 0.91, 1.08);
+const _gradeDusk = new THREE.Color(1.06, 0.95, 0.90);
 const _tmpZenith = new THREE.Color();
 const _tmpMid = new THREE.Color();
 const _tmpHorizon = new THREE.Color();
@@ -162,9 +210,9 @@ const _sunArcDir = new THREE.Vector3();
 const _moonArcDir = new THREE.Vector3();
 
 function computePhaseFromTime(t: number): TimePhase {
-  if (t < 0.14 || t >= 0.93) return 'dawn';
-  if (t < 0.53) return 'day';
-  if (t < 0.69) return 'sunset';
+  if (t < 0.2) return 'dawn';
+  if (t < 0.6) return 'day';
+  if (t < 0.82) return 'sunset';
   return 'night';
 }
 
@@ -254,10 +302,10 @@ export class EnvironmentController {
   public advanceTimePhase(): TimePhase {
     // Jump cleanly into the next distinct visual phase: dawn -> day -> sunset -> night
     const phaseTargets: Record<TimePhase, number> = {
-      dawn: 0.24, // dawn -> day
-      day: 0.60, // day -> sunset
-      sunset: 0.78, // sunset -> night
-      night: 0.05, // night -> dawn
+      dawn: 0.30, // dawn -> midday
+      day: 0.72, // midday -> golden sunset
+      sunset: 0.89, // sunset -> night
+      night: 0.06, // night -> dawn
     };
     this.timeOfDay = phaseTargets[this.lastPhase];
     this.applyAtmosphere(0);
@@ -372,10 +420,10 @@ export class EnvironmentController {
     _tmpHemiSky.copy(k0.hemiSky).lerp(k1.hemiSky, u);
     _tmpHemiGround.copy(k0.hemiGround).lerp(k1.hemiGround, u);
 
-    const nightFactor = k0.night + (k1.night - k0.night) * u;
-    const duskFactor = k0.dusk + (k1.dusk - k0.dusk) * u;
-    const baseSunInt = k0.sunIntensity + (k1.sunIntensity - k0.sunIntensity) * u;
-    const baseHemiInt = k0.hemiIntensity + (k1.hemiIntensity - k0.hemiIntensity) * u;
+    const nightFactor = THREE.MathUtils.lerp(k0.night, k1.night, u);
+    const duskFactor = THREE.MathUtils.lerp(k0.dusk, k1.dusk, u);
+    const baseSunInt = THREE.MathUtils.lerp(k0.sunIntensity, k1.sunIntensity, u);
+    const baseHemiInt = THREE.MathUtils.lerp(k0.hemiIntensity, k1.hemiIntensity, u);
 
     // Preserve VignetteDirector's golden morning bloom warmth during daytime
     const dayWarmthMask = Math.max(0, 1.0 - nightFactor * 1.35) * this.awakeningFactor;
@@ -388,34 +436,52 @@ export class EnvironmentController {
     _tmpMid.lerp(_overcastSky, skyOvercastMix * 0.58);
     _tmpHorizon.lerp(_overcastSky, skyOvercastMix * 0.45);
 
-    const targetRainFog = _tmpFog.copy(_tmpFog).lerp(nightFactor > 0.5 ? _nightRainFog : _rainFog, this.rainAmount * 0.68);
-    const targetMistFog = nightFactor > 0.5 ? _nightMistFog : _mistFog;
-    targetRainFog.lerp(targetMistFog, this.mistAmount * 0.65);
+    // Blend clear-weather exponential fog tightly into sky horizon for seamless skyline fade
+    _tmpFog.lerp(_tmpHorizon, 0.55);
+    _tmpFog.lerp(nightFactor > 0.5 ? _nightRainFog : _rainFog, this.rainAmount * 0.68);
+    _tmpFog.lerp(nightFactor > 0.5 ? _nightMistFog : _mistFog, this.mistAmount * 0.65);
 
     if (this.scene.background instanceof THREE.Color) {
       this.scene.background.copy(_tmpHorizon);
     }
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.color.copy(_tmpFog);
-      const baseDensity = 0.00042 + nightFactor * 0.00024;
+      const baseDensity = 0.00054 + nightFactor * 0.00024;
       this.scene.fog.density =
         baseDensity + this.rainAmount * 0.00085 + this.mistAmount * 0.00145;
     }
 
-    // 4. Celestial arc for Sun & Moon + seamless key-light handoff
-    const sunTheta = this.timeOfDay * Math.PI * 2.0; // 0 = east horizon, PI/2 = high noon, PI = west horizon
-    const sunElev = Math.sin(sunTheta + 0.34);
-    const sunAz = Math.cos(sunTheta + 0.34);
-    _sunArcDir.set(sunAz * 0.68, sunElev, 0.42).normalize();
-    _moonArcDir.set(-sunAz * 0.62, Math.max(0.18, -sunElev * 0.85 + 0.35), -0.38).normalize();
+    // 4. Continuous Sun Arc across dayProgress (0..1):
+    //    Rises low in East (0.0..0.2), sweeps high overhead at Midday (0.2..0.6),
+    //    sets low in West (0.65..0.85) with long stretching shadows, and fades softly below horizon at Night (0.82..1.0).
+    const t = this.timeOfDay;
+    const daylightSpan = 0.84;
+    let horizAngle: number;
+    let rawSunElev: number;
+    if (t <= daylightSpan) {
+      const dayU = t / daylightSpan;
+      horizAngle = dayU * Math.PI;
+      rawSunElev = 0.05 + Math.sin(dayU * Math.PI) * 0.90;
+    } else {
+      const nightU = (t - daylightSpan) / (1.0 - daylightSpan);
+      horizAngle = Math.PI + nightU * Math.PI;
+      rawSunElev = 0.05 - Math.sin(nightU * Math.PI) * 0.44;
+    }
+
+    const sunAzX = Math.cos(horizAngle) * 0.90;
+    const sunAzZ = 0.24 + 0.54 * Math.max(0, Math.sin(horizAngle));
+    _sunArcDir.set(sunAzX, rawSunElev, sunAzZ).normalize();
+    _moonArcDir
+      .set(-sunAzX * 0.72, Math.max(0.24, -rawSunElev * 0.85 + 0.38), -0.36)
+      .normalize();
 
     (storybookUniforms.sunDirWorld.value as THREE.Vector3).copy(_sunArcDir);
     (storybookUniforms.moonDirWorld.value as THREE.Vector3).copy(_moonArcDir);
 
-    // Blend key light direction smoothly toward moon when nightFactor > 0.5
-    const keyUseMoon = Math.max(0, Math.min(1, (nightFactor - 0.35) / 0.35));
-    _targetKeyDir.copy(_sunArcDir).lerp(_moonArcDir, keyUseMoon);
-    _targetKeyDir.y = Math.max(0.24, _targetKeyDir.y); // Keep cast shadows well-angled above skyline
+    // Keep directional shadow elevation shallow at dawn/sunset for visibly stretching shadows,
+    // without dropping below 0.13 (prevents CSM shadow frustum collapse). Never snap toward moon at night.
+    _targetKeyDir.copy(_sunArcDir);
+    _targetKeyDir.y = Math.max(0.13, _targetKeyDir.y);
     _targetKeyDir.normalize();
 
     this.sunLight.position.copy(_targetKeyDir).multiplyScalar(146.0);
@@ -424,9 +490,17 @@ export class EnvironmentController {
       this.onKeyLightDirectionMoved?.();
     }
 
+    // Softly fade directional sun & cast shadows out once the sun dips below the horizon at night,
+    // and smoothly wake them back up during pre-dawn (0.96 -> 1.0 -> 0.05).
+    const horizonFadeOut = 1.0 - THREE.MathUtils.smoothstep(t, 0.82, 0.88);
+    const preDawnWake = THREE.MathUtils.smoothstep(t, 0.955, 1.0);
+    const dawnFull = THREE.MathUtils.lerp(0.68, 1.0, THREE.MathUtils.smoothstep(t, 0.0, 0.06));
+    const sunShadowEnvelope = t >= 0.82 ? Math.max(horizonFadeOut, preDawnWake * 0.68) : dawnFull;
+
     const overcastLightAtten = 1.0 - overcast * 0.34;
     this.sunLight.color.copy(_tmpSunCol);
-    this.sunLight.intensity = (baseSunInt + dayWarmthMask * 0.14) * overcastLightAtten;
+    this.sunLight.intensity =
+      (baseSunInt + dayWarmthMask * 0.14) * overcastLightAtten * sunShadowEnvelope;
     this.hemiLight.color.copy(_tmpHemiSky);
     this.hemiLight.groundColor.copy(_tmpHemiGround);
     this.hemiLight.intensity =
@@ -439,7 +513,7 @@ export class EnvironmentController {
     const windStrength = 1.0 + this.breezeAmount * 1.15 + this.rainAmount * 0.72;
     storybookUniforms.windStrength.value = windStrength;
     storybookUniforms.overcastFactor.value = overcast;
-    storybookUniforms.bloomStrength.value = 0.16 + nightFactor * 0.18 + duskFactor * 0.08;
+    storybookUniforms.bloomStrength.value = 0.20 + nightFactor * 0.20 + duskFactor * 0.09;
 
     (storybookUniforms.skyZenithColor.value as THREE.Color).copy(_tmpZenith);
     (storybookUniforms.skyMidColor.value as THREE.Color).copy(_tmpMid);

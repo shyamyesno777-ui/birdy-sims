@@ -1,5 +1,3 @@
-import type { TimePhase, WeatherType } from '../core/EventBus.ts';
-
 export type SparrowDeedId =
   | 'croissant_heist'
   | 'coffee_bowling'
@@ -84,12 +82,6 @@ interface CachedDeedRow {
 export class SparrowJournalHUD {
   private readonly root: HTMLDivElement;
   private readonly pillBtn: HTMLButtonElement;
-  private readonly timeBtn: HTMLButtonElement;
-  private readonly timeTextEl: HTMLSpanElement;
-  private readonly timeKeyEl: HTMLElement;
-  private readonly weatherBtn: HTMLButtonElement;
-  private readonly weatherTextEl: HTMLSpanElement;
-  private readonly weatherKeyEl: HTMLElement;
   private readonly seedCountEl: HTMLSpanElement;
   private readonly deedCountEl: HTMLSpanElement;
   private readonly keyCapEl: HTMLElement;
@@ -105,11 +97,7 @@ export class SparrowJournalHUD {
   private expanded = false;
   private visible = false;
   private mobileMode = false;
-  private currentPhase: TimePhase = 'dawn';
-  private currentWeather: WeatherType = 'clear';
   public onToggleMute?: () => boolean;
-  public onCycleTime?: () => void;
-  public onCycleWeather?: () => void;
 
   constructor(parent: HTMLElement) {
     this.root = document.createElement('div');
@@ -172,68 +160,6 @@ export class SparrowJournalHUD {
     });
 
     topBar.appendChild(this.pillBtn);
-
-    // Compact Time-of-Day cycle pill (Dawn -> Day -> Sunset -> Night)
-    this.timeBtn = document.createElement('button');
-    this.timeBtn.type = 'button';
-    this.timeBtn.className = 'journal-pill journal-env-pill';
-    this.timeBtn.setAttribute('aria-label', 'Advance Time of Day (Key T)');
-    this.timeTextEl = document.createElement('span');
-    this.timeTextEl.textContent = 'Dawn';
-    this.timeKeyEl = document.createElement('kbd');
-    this.timeKeyEl.className = 'journal-tab-key';
-    this.timeKeyEl.textContent = 'T';
-    this.timeBtn.appendChild(this.timeTextEl);
-    this.timeBtn.appendChild(this.timeKeyEl);
-
-    let lastTimeTouchMs = 0;
-    this.timeBtn.addEventListener(
-      'touchend',
-      (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        lastTimeTouchMs = performance.now();
-        this.onCycleTime?.();
-      },
-      { passive: false }
-    );
-    this.timeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (performance.now() - lastTimeTouchMs < 450) return;
-      this.onCycleTime?.();
-    });
-    topBar.appendChild(this.timeBtn);
-
-    // Compact Weather cycle pill (Clear -> Breezy -> Rain -> Mist)
-    this.weatherBtn = document.createElement('button');
-    this.weatherBtn.type = 'button';
-    this.weatherBtn.className = 'journal-pill journal-env-pill';
-    this.weatherBtn.setAttribute('aria-label', 'Cycle Weather (Key V)');
-    this.weatherTextEl = document.createElement('span');
-    this.weatherTextEl.textContent = 'Clear';
-    this.weatherKeyEl = document.createElement('kbd');
-    this.weatherKeyEl.className = 'journal-tab-key';
-    this.weatherKeyEl.textContent = 'V';
-    this.weatherBtn.appendChild(this.weatherTextEl);
-    this.weatherBtn.appendChild(this.weatherKeyEl);
-
-    let lastWeatherTouchMs = 0;
-    this.weatherBtn.addEventListener(
-      'touchend',
-      (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        lastWeatherTouchMs = performance.now();
-        this.onCycleWeather?.();
-      },
-      { passive: false }
-    );
-    this.weatherBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (performance.now() - lastWeatherTouchMs < 450) return;
-      this.onCycleWeather?.();
-    });
-    topBar.appendChild(this.weatherBtn);
 
     // Expandable Postcard Checklist (one row per deed)
     this.cardEl = document.createElement('div');
@@ -305,12 +231,6 @@ export class SparrowJournalHUD {
         if (e.code === 'KeyJ' && this.visible) {
           e.preventDefault();
           this.setExpanded(!this.expanded);
-        } else if (e.code === 'KeyT' && this.visible) {
-          e.preventDefault();
-          this.onCycleTime?.();
-        } else if (e.code === 'KeyV' && this.visible) {
-          e.preventDefault();
-          this.onCycleWeather?.();
         } else if (e.code === 'KeyM') {
           e.preventDefault();
           this.onToggleMute?.();
@@ -320,49 +240,14 @@ export class SparrowJournalHUD {
     );
   }
 
-  public setTimePhase(phase: TimePhase): void {
-    if (this.currentPhase === phase) return;
-    this.currentPhase = phase;
-    const labels: Record<TimePhase, string> = {
-      dawn: 'Dawn',
-      day: 'Day',
-      sunset: 'Sunset',
-      night: 'Night',
-    };
-    this.timeTextEl.textContent = labels[phase];
-    this.timeBtn.classList.toggle('is-night', phase === 'night');
-  }
-
-  public setWeather(weather: WeatherType): void {
-    if (this.currentWeather === weather) return;
-    this.currentWeather = weather;
-    const labels: Record<WeatherType, string> = {
-      clear: 'Clear',
-      breezy: 'Breezy',
-      rain: 'Rain',
-      mist: 'Mist',
-    };
-    this.weatherTextEl.textContent = labels[weather];
-  }
-
   public setMobileMode(isMobile: boolean): void {
     this.mobileMode = isMobile;
     this.root.classList.toggle('is-mobile', isMobile);
     const keyDisplay = isMobile ? 'none' : '';
     this.keyCapEl.style.display = keyDisplay;
-    this.timeKeyEl.style.display = keyDisplay;
-    this.weatherKeyEl.style.display = keyDisplay;
     this.pillBtn.setAttribute(
       'aria-label',
       isMobile ? 'Toggle Deeds List' : 'Toggle Deeds List (Key J)'
-    );
-    this.timeBtn.setAttribute(
-      'aria-label',
-      isMobile ? 'Advance Time of Day' : 'Advance Time of Day (Key T)'
-    );
-    this.weatherBtn.setAttribute(
-      'aria-label',
-      isMobile ? 'Cycle Weather' : 'Cycle Weather (Key V)'
     );
   }
 
