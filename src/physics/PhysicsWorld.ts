@@ -192,6 +192,7 @@ export class PhysicsWorld {
 
   private bumpMap = new WeakMap<CANNON.Body, BumpMetadata>();
   private attachMap = new WeakMap<CANNON.Body, THREE.Object3D>();
+  private propByBody = new WeakMap<CANNON.Body, InteractiveProp>();
   private propsNeedCompact = false;
 
   private readonly propGrid = new SpatialGrid2D<InteractiveProp>(WORLD_CONFIG.spatialGridCellSize);
@@ -591,6 +592,7 @@ export class PhysicsWorld {
       syncedWhileSleeping: false,
     };
     this.attachMap.set(body, opts.mesh);
+    this.propByBody.set(body, prop);
 
     body.addEventListener('collide', (ev: { contact: CANNON.ContactEquation }) => {
       if (
@@ -820,6 +822,48 @@ export class PhysicsWorld {
       forwardDir.x * 4.8 + (Math.random() - 0.5) * 2.0
     );
     return { prop: struck, shattered: false };
+  }
+
+  public strikeBodyWithBullet(
+    body: CANNON.Body | null,
+    hitPoint: THREE.Vector3,
+    dir: THREE.Vector3
+  ): { prop?: InteractiveProp; shattered?: boolean; surface: 'ceramic' | 'wood' | 'stone' } {
+    const meta = body ? this.bumpMap.get(body) : undefined;
+    const surf = meta?.surface === 'ceramic' ? 'ceramic' : meta?.surface === 'wood' ? 'wood' : 'stone';
+    if (!body) return { surface: surf };
+
+    const prop = this.propByBody.get(body);
+    if (prop && !prop.consumed && !prop.carried) {
+      if (prop.breakable) {
+        this.shatterProp(prop);
+        return { prop, shattered: true, surface: 'ceramic' };
+      }
+      prop.body.wakeUp();
+      prop.syncedWhileSleeping = false;
+      const imp = Math.max(3.8, Math.min(13.5, 5.2 / Math.max(0.28, prop.body.mass)));
+      prop.body.velocity.x += dir.x * imp;
+      prop.body.velocity.y = Math.max(prop.body.velocity.y + 1.8, 3.0 + dir.y * imp * 0.45);
+      prop.body.velocity.z += dir.z * imp;
+      prop.body.angularVelocity.set(
+        -dir.z * 7.5 + (Math.random() - 0.5) * 4.0,
+        (Math.random() - 0.5) * 6.0,
+        dir.x * 7.5 + (Math.random() - 0.5) * 4.0
+      );
+      return { prop, shattered: false, surface: surf };
+    }
+
+    if (body.mass > 0) {
+      body.wakeUp();
+      const imp = Math.max(3.2, Math.min(11.0, 4.8 / Math.max(0.3, body.mass)));
+      _impulseVec.set(dir.x * imp, Math.max(1.5, dir.y * imp + 2.0), dir.z * imp);
+      _worldPtVec.set(hitPoint.x, hitPoint.y, hitPoint.z);
+      body.applyImpulse(_impulseVec, _worldPtVec);
+    } else if (meta?.onBump) {
+      meta.onBump(hitPoint, 10.0);
+    }
+
+    return { surface: surf };
   }
 
   public removeProp(prop: InteractiveProp): void {

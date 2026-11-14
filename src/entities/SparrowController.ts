@@ -13,6 +13,8 @@ import type { WorldFX } from '../rendering/WorldFX.ts';
 import { PALETTE } from '../rendering/Palette.ts';
 import { WORLD_CONFIG, isInsideAtelier } from '../core/WorldConfig.ts';
 import type { MobileTouchControls, MobileStickState } from '../ui/MobileTouchControls.ts';
+import { createUnlitPastelFXMaterial } from '../rendering/StorybookMaterial.ts';
+import { rbox, rcyl, transformGeo, mergeParts } from '../geometry/Sculptor.ts';
 
 export type BirdMode = 'grounded' | 'perched' | 'flying';
 
@@ -124,14 +126,39 @@ const _droppingWaterPt = new THREE.Vector3();
 
 const _ledgeTopHit = createGroundRaycastHit();
 const _ledgeProbeHit = createGroundRaycastHit();
-const _dizzySideHit = createGroundRaycastHit();
-const _dizzyHit = createGroundRaycastHit();
 const _wallHit = createGroundRaycastHit();
 const _groundHit = createGroundRaycastHit();
 const _flySweepHit = createGroundRaycastHit();
 const _droppingRayHit = createGroundRaycastHit();
+const _aimRayHit = createGroundRaycastHit();
+const _bulletRayHit = createGroundRaycastHit();
+
+const _aimOrigin = new THREE.Vector3();
+const _aimDir = new THREE.Vector3();
+const _aimTarget = new THREE.Vector3();
+const _muzzleWorldPos = new THREE.Vector3();
+const _bulletDir = new THREE.Vector3();
+const _bulletNextPos = new THREE.Vector3();
+const _bulletSegDir = new THREE.Vector3();
+const _bulletUpAxis = new THREE.Vector3(0, 1, 0);
+const _bulletWaterPt = new THREE.Vector3();
+const _bulletSwitchPos = new THREE.Vector3();
+const _bounceReflect = new THREE.Vector3();
+
+const BULLET_POOL_SIZE = 32;
+const BULLET_SPEED = 118.0;
+const BULLET_MAX_AGE = 1.45;
 
 interface ActiveDropping {
+  mesh: THREE.Mesh;
+  pos: THREE.Vector3;
+  prevPos: THREE.Vector3;
+  vel: THREE.Vector3;
+  age: number;
+  active: boolean;
+}
+
+interface ActiveBullet {
   mesh: THREE.Mesh;
   pos: THREE.Vector3;
   prevPos: THREE.Vector3;
@@ -158,7 +185,9 @@ export class SparrowController {
 
   public mode: BirdMode = 'perched';
   public dizzyState: DizzyPoseState = 'none';
-  private dizzyTimer = 0;
+  private tumbleTimer = 0;
+  private tumbleDuration = 0.36;
+  private tumbleDir = 1;
 
   public carriedProp: InteractiveProp | null = null;
   public seedsGathered = 0;
@@ -227,6 +256,17 @@ export class SparrowController {
   private droppingTailFlick = 0;
   private cutsceneFrozen = false;
 
+  // Hidden Gun Toggle ('G') + Projectile Pool state (peaceful by default)
+  private gunEquipped = false;
+  private gunAimPitch = 0;
+  private fireQueued = false;
+  private fireCooldown = 0;
+  private gunShockCooldown = 0;
+  private readonly activeBullets: ActiveBullet[] = [];
+  private bulletCursor = 0;
+  private readonly bulletSharedGeo: THREE.BufferGeometry;
+  private readonly bulletSharedMat: THREE.MeshBasicNodeMaterial;
+
   // Input state
   private readonly domElement: HTMLCanvasElement;
   private readonly wakeAudio: () => void;
@@ -248,6 +288,17 @@ export class SparrowController {
     sampleShooGust: (playerPos: THREE.Vector3) => THREE.Vector3 | null;
     notifyTablePeck?: (beakPos: THREE.Vector3) => void;
     isHumanCollider?: (body: CANNON.Body | null | undefined) => boolean;
+    notifyAcousticShock?: (origin: THREE.Vector3, kind: 'shatter' | 'topple' | 'bell') => void;
+    checkBulletHit?: (
+      prevPos: THREE.Vector3,
+      nextPos: THREE.Vector3,
+      birdPos: THREE.Vector3
+    ) => {
+      hit: boolean;
+      kind: 'human' | 'pigeon' | 'companion';
+      distance: number;
+      point: THREE.Vector3;
+    } | null;
     checkFallingDroppingHit?: (
       prevPos: THREE.Vector3,
       nextPos: THREE.Vector3,
@@ -280,6 +331,9 @@ export class SparrowController {
     ) => void;
   };
 
+  public getAimRay?: (outOrigin: THREE.Vector3, outDir: THREE.Vector3) => void;
+  public onGunToggleCallback?: (equipped: boolean) => void;
+  public onGunFiredCallback?: (muzzlePos: THREE.Vector3, dir: THREE.Vector3) => void;
   public onChirpCallback?: (worldPos: THREE.Vector3) => void;
   public onSeedEatenCallback?: (worldPos: THREE.Vector3, total: number) => void;
   public onPropPickedUpCallback?: (prop: InteractiveProp) => void;
@@ -319,6 +373,29 @@ export class SparrowController {
       });
     }
 
+    this.bulletSharedGeo = mergeParts([
+      transformGeo(rcyl(0.008, 0.032, 0.14, 0xffef9e, 8), { pos: [0, 0.14, 0] }),
+      transformGeo(rbox(0.038, 0.44, 0.038, 0.012, 0xffa634, 1), { pos: [0, -0.11, 0] }),
+    ]);
+    this.bulletSharedGeo.computeBoundingSphere();
+    this.bulletSharedMat = createUnlitPastelFXMaterial(0xffffff, 0.96, true);
+    this.bulletSharedMat.vertexColors = true;
+    for (let i = 0; i < BULLET_POOL_SIZE; i++) {
+      const mesh = new THREE.Mesh(this.bulletSharedGeo, this.bulletSharedMat);
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.visible = false;
+      scene.add(mesh);
+      this.activeBullets.push({
+        mesh,
+        pos: new THREE.Vector3(),
+        prevPos: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+        age: 0,
+        active: false,
+      });
+    }
+
     this.bindInputs();
 
     const initialPerch = this.perches.findNearestPerch(
@@ -348,6 +425,7 @@ export class SparrowController {
     this.jumpQueued = false;
     this.interactQueued = false;
     this.chirpQueued = false;
+    this.fireQueued = false;
   }
 
   public isMobileInputActive(): boolean {
@@ -366,21 +444,40 @@ export class SparrowController {
     controls.onTapJump = () => {
       if (!this.inputEnabled) return;
       this.wakeAudio();
-      if (this.dizzyState === 'grounded') {
-        this.dizzyTimer = Math.max(0.08, this.dizzyTimer - 0.08);
+      if (this.gunEquipped) {
+        this.fireQueued = true;
         return;
       }
       this.jumpQueued = true;
       this.jumpBufferTimer = 0.14;
     };
     controls.onTwoFingerTap = () => {
-      if (!this.inputEnabled || this.dizzyState !== 'none' || !this.carriedProp) {
+      if (!this.inputEnabled || !this.carriedProp) {
         return false;
       }
       this.mobileDropIgnoreGrabTimer = 1.35;
       this.handleBeakAction();
       return true;
     };
+  }
+
+  public isGunEquipped(): boolean {
+    return this.gunEquipped;
+  }
+
+  public setGunEquipped(equipped: boolean): void {
+    if (this.gunEquipped === equipped) return;
+    this.gunEquipped = equipped;
+    this.sparrowMesh.setGunEquipped(equipped);
+    this.audio.playGunToggle(equipped);
+    if (!equipped) {
+      this.fireQueued = false;
+    }
+    this.onGunToggleCallback?.(equipped);
+  }
+
+  public toggleGun(): void {
+    this.setGunEquipped(!this.gunEquipped);
   }
 
   public consumeCarriedProp(prop: InteractiveProp): void {
@@ -414,18 +511,21 @@ export class SparrowController {
         }
 
         if (!this.keys.has(code)) {
+          if (code === 'KeyG') {
+            this.toggleGun();
+          }
           if (code === 'Space') {
-            this.jumpQueued = true;
-            this.jumpBufferTimer = 0.10;
+            if (this.gunEquipped) {
+              this.fireQueued = true;
+            } else {
+              this.jumpQueued = true;
+              this.jumpBufferTimer = 0.10;
+            }
           }
           if (code === 'KeyE' || code === 'KeyF') {
             this.interactQueued = true;
           }
           if (code === 'KeyQ' || code === 'KeyC' || code === 'KeyR') this.chirpQueued = true;
-
-          if (this.dizzyState === 'grounded') {
-            this.dizzyTimer = Math.max(0.08, this.dizzyTimer - 0.08);
-          }
         }
         this.keys.add(code);
       },
@@ -467,6 +567,11 @@ export class SparrowController {
       (e) => {
         if (!this.inputEnabled || this.isMobileInputActive()) return;
         this.wakeAudio();
+        if (e.button === 0 && this.gunEquipped) {
+          this.holdingMouseLeft = true;
+          this.fireQueued = true;
+          return;
+        }
         if (document.pointerLockElement !== this.domElement) return;
         if (e.button === 2) {
           this.chirpQueued = true;
@@ -492,11 +597,22 @@ export class SparrowController {
   public dispose(): void {
     this.inputAbort.abort();
     this.clearQueuedInputs();
+    if (this.gunEquipped) {
+      this.gunEquipped = false;
+      this.sparrowMesh.setGunEquipped(false);
+      this.onGunToggleCallback?.(false);
+    }
     this.sparrowMesh.root.removeFromParent();
     for (let i = 0; i < this.activeDroppings.length; i++) {
       this.activeDroppings[i].mesh.removeFromParent();
     }
     this.activeDroppings.length = 0;
+    for (let i = 0; i < this.activeBullets.length; i++) {
+      this.activeBullets[i].mesh.removeFromParent();
+    }
+    this.activeBullets.length = 0;
+    this.bulletSharedGeo.dispose();
+    this.bulletSharedMat.dispose();
   }
 
   private getMoveAxes(): {
@@ -862,8 +978,8 @@ export class SparrowController {
     impactSpeed: number
   ): void {
     if (this.bonkCooldown > 0 || this.tutorialSafeZone) return;
-    this.bonkTimer = 0.5;
-    this.bonkCooldown = 0.48;
+    this.bonkTimer = 0.28;
+    this.bonkCooldown = 0.28;
 
     const meta = this.physics.getBumpMetadata(hitBody);
     const soundSurf: SurfaceSoundType =
@@ -875,196 +991,86 @@ export class SparrowController {
     meta?.onBump?.(hitPoint, impactSpeed);
 
     if (this.mode === 'flying') {
-      this.velocity.set(
-        hitNormal.x * 5.0,
-        Math.max(2.6, this.velocity.y * 0.35 + 2.8),
-        hitNormal.z * 5.0
-      );
+      const vn = this.velocity.dot(hitNormal);
+      if (vn < 0) {
+        _bounceReflect.copy(this.velocity).addScaledVector(hitNormal, -1.65 * vn);
+        this.velocity.copy(_bounceReflect);
+      }
+      this.velocity.y =
+        hitNormal.y < -0.35
+          ? Math.min(this.velocity.y, -2.0)
+          : Math.max(this.velocity.y, 2.6);
     } else {
-      this.velocity.x = hitNormal.x * 4.0;
-      this.velocity.z = hitNormal.z * 4.0;
-      this.hopPhase = 0.25;
+      const push = Math.max(3.6, Math.min(6.2, impactSpeed * 0.65));
+      this.velocity.x = hitNormal.x * push;
+      this.velocity.z = hitNormal.z * push;
+      this.hopPhase = 0.22;
     }
   }
 
-  public triggerDizzyWallFall(
+  /**
+   * Unbreakable resilient collision rebound: reflects the bird off walls, roofs, ceilings,
+   * or steep terrain with playful feather burst & aerial tumble while preserving instant flight control.
+   */
+  public bounceOffSurface(
     hitPoint: THREE.Vector3,
     hitNormal: THREE.Vector3,
     hitBody: CANNON.Body | null,
-    impactSpeed: number
+    impactSpeed: number,
+    restitution = 0.68
   ): void {
-    if (this.tutorialSafeZone || this.dizzyState !== 'none' || this.bonkCooldown > 0) return;
-
     this.leavePerch(false);
     this.isHopAirborne = false;
-    this.coyoteTimer = 0;
+    this.coyoteTimer = 0.12;
     this.mode = 'flying';
-    this.dizzyState = 'falling';
-    this.dizzyTimer = 0;
-    this.bonkCooldown = 1.6;
+    this.dizzyState = 'none';
     this.wingTuckAmount = 0;
-    this.flapAnimTimer = 0;
 
-    if (this.carriedProp) {
-      const prop = this.carriedProp;
-      this.carriedProp = null;
-      prop.carried = false;
-      prop.body.wakeUp();
-      const px = this.position.x + hitNormal.x * 0.38;
-      const py = this.position.y + 0.2;
-      const pz = this.position.z + hitNormal.z * 0.38;
-      prop.body.position.set(px, py, pz);
-      prop.body.interpolatedPosition.set(px, py, pz);
-      prop.mesh.position.set(px, py, pz);
-      prop.body.velocity.set(hitNormal.x * 2.8, 2.5, hitNormal.z * 2.8);
+    const vn = this.velocity.dot(hitNormal);
+    if (vn < 0) {
+      _bounceReflect.copy(this.velocity).addScaledVector(hitNormal, -(1 + restitution) * vn);
+      this.velocity.copy(_bounceReflect);
     }
 
-    const meta = this.physics.getBumpMetadata(hitBody);
-    meta?.onBump?.(hitPoint, impactSpeed);
-
-    this.audio.playDizzyWallSmack();
-    this.fx.spawnFeatherBurst(this.position, 8, 3.8);
-    this.fx.attachDizzyStars(() => this.position, 6.0);
-
-    this.position.addScaledVector(hitNormal, 0.62);
-    this.velocity.set(hitNormal.x * 3.8, 1.8, hitNormal.z * 3.8);
-  }
-
-  private updateDizzySequence(dt: number): void {
-    if (this.dizzyState === 'falling') {
-      this.velocity.y -= 25.5 * dt;
-      this.velocity.x *= Math.pow(0.45, dt);
-      this.velocity.z *= Math.pow(0.45, dt);
-
-      const hSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-      if (hSpeed > 0.05) {
-        _hDir.set(this.velocity.x / hSpeed, 0, this.velocity.z / hSpeed);
-        const sideHit = this.physics.raycastGround(
-          this.position,
-          _hDir,
-          0.55 + hSpeed * dt,
-          undefined,
-          _dizzySideHit
-        );
-        if (sideHit.hit && sideHit.normal.y < 0.45) {
-          this.velocity.x = sideHit.normal.x * 2.2;
-          this.velocity.z = sideHit.normal.z * 2.2;
-        }
-      }
-
-      const basin = this.physics.getBasinAtXZ(
-        this.position.x,
-        this.position.z,
-        this.position.y
-      );
-      const fallDist = Math.max(0.55, -this.velocity.y * dt + 0.55);
-      _rayOrigin.set(this.position.x, this.position.y + 0.25, this.position.z);
-      const groundHit = this.physics.raycastGround(
-        _rayOrigin,
-        _down,
-        fallDist,
-        undefined,
-        _dizzyHit
-      );
-
-      // Only land on solid ground if it is not a submerged floor beneath a water basin
-      if (
-        groundHit.hit &&
-        groundHit.normal.y > 0.48 &&
-        this.velocity.y <= 0.5 &&
-        (!basin || groundHit.point.y >= basin.surfaceY - 0.05)
-      ) {
-        this.position.set(
-          groundHit.point.x,
-          groundHit.point.y + GROUND_FOOT_CLEARANCE,
-          groundHit.point.z
-        );
-        this.velocity.set(0, 0, 0);
-        this.dizzyState = 'grounded';
-        this.dizzyTimer = 0.85;
-        this.mode = 'grounded';
-        const surf = this.detectGroundSurfaceType(this.position);
-        this.audio.playLanding(9.5, surf);
-        this.fx.spawnBurst(groundHit.point, 7, false, 2.8);
-        return;
-      }
-
-      this.position.addScaledVector(this.velocity, dt);
-
-      const nextBasin = this.physics.getBasinAtXZ(
-        this.position.x,
-        this.position.z,
-        this.position.y
-      );
-      if (nextBasin && this.position.y <= nextBasin.surfaceY + 0.38) {
-        this.position.y = nextBasin.surfaceY + 0.35;
-        this.velocity.set(0, 0, 0);
-        this.dizzyState = 'grounded';
-        this.dizzyTimer = 0.72;
-        this.mode = 'grounded';
-        _ripplePos.set(this.position.x, nextBasin.surfaceY, this.position.z);
-        this.fx.spawnWaterSplash(_ripplePos, 0.85);
-        this.audio.playWaterPlop(this.position);
-        return;
-      }
-
-      if (!nextBasin) {
-        _rayOrigin.set(this.position.x, this.position.y + 1.0, this.position.z);
-        const floorProbe = this.physics.raycastGround(
-          _rayOrigin,
-          _down,
-          4.0,
-          undefined,
-          _dizzyHit
-        );
-        const minSafeY = floorProbe.hit ? floorProbe.point.y + GROUND_FOOT_CLEARANCE : GROUND_FOOT_CLEARANCE;
-        if (this.position.y < minSafeY) {
-          this.position.y = minSafeY;
-          this.velocity.set(0, 0, 0);
-          this.dizzyState = 'grounded';
-          this.dizzyTimer = 0.85;
-          this.mode = 'grounded';
-        }
-      }
-      return;
+    const minBounceOut = Math.min(8.5, Math.max(4.4, impactSpeed * 0.56));
+    const postVn = this.velocity.dot(hitNormal);
+    if (postVn < minBounceOut) {
+      this.velocity.addScaledVector(hitNormal, minBounceOut - postVn);
     }
 
-    if (this.dizzyState === 'grounded') {
-      this.velocity.set(0, 0, 0);
-      const basin = this.physics.getBasinAtXZ(this.position.x, this.position.z, this.position.y);
-      if (basin && this.position.y <= basin.surfaceY + 0.45) {
-        this.position.y = basin.surfaceY + 0.35;
-      }
-      this.dizzyTimer -= dt;
-      if (this.dizzyTimer <= 0) {
-        this.dizzyState = 'shaking';
-        this.dizzyTimer = 0.54;
-        this.fx.clearDizzyStars();
-        this.audio.playFeatherRuffleShake();
-        this.fx.spawnFeatherBurst(this.position, 8, 3.6);
-      }
-      return;
+    if (hitNormal.y < -0.35) {
+      this.velocity.y = Math.min(this.velocity.y, -Math.max(2.6, impactSpeed * 0.42));
+    } else {
+      const liftFloor = Math.min(6.4, 2.8 + impactSpeed * 0.18);
+      this.velocity.y = Math.max(this.velocity.y, liftFloor);
     }
 
-    if (this.dizzyState === 'shaking') {
-      this.velocity.set(0, 0, 0);
-      const basin = this.physics.getBasinAtXZ(this.position.x, this.position.z, this.position.y);
-      if (basin && this.position.y <= basin.surfaceY + 0.45) {
-        this.position.y = basin.surfaceY + 0.35;
-      }
-      this.dizzyTimer -= dt;
-      if (this.dizzyTimer <= 0) {
-        this.dizzyState = 'none';
-        this.mode = 'grounded';
-        this.coyoteTimer = 0.12;
-        if (basin && this.position.y <= basin.surfaceY + 0.48) {
-          this.position.y = basin.surfaceY + 0.35;
-        }
-        this.flightStamina = 1.0;
-        this.bankAngle = 0;
-        this.pitchAngle = 0;
-        this.bonkCooldown = 0.55;
-      }
+    const totalSpeed = this.velocity.length();
+    if (totalSpeed > 25.0) {
+      this.velocity.multiplyScalar(25.0 / totalSpeed);
+    }
+
+    this.flightStamina = Math.min(1.0, this.flightStamina + 0.28);
+    this.flapAnimTimer = Math.max(this.flapAnimTimer, 0.42);
+    this.position.addScaledVector(hitNormal, 0.34);
+
+    if (impactSpeed > 6.5) {
+      this.tumbleDuration = Math.min(0.46, 0.24 + impactSpeed * 0.012);
+      this.tumbleTimer = this.tumbleDuration;
+      this.tumbleDir = Math.random() < 0.5 ? 1 : -1;
+    }
+
+    if (this.bonkCooldown <= 0 && !this.tutorialSafeZone) {
+      this.bonkTimer = 0.3;
+      this.bonkCooldown = 0.24;
+      const meta = this.physics.getBumpMetadata(hitBody);
+      meta?.onBump?.(hitPoint, impactSpeed);
+      const soundSurf: SurfaceSoundType =
+        meta?.surface === 'stone' || meta?.surface === 'ceramic'
+          ? 'wood'
+          : ((meta?.surface as SurfaceSoundType | undefined) ?? 'wood');
+      this.audio.playCuteBump(soundSurf);
+      this.fx.spawnFeatherBurst(this.position, impactSpeed > 10 ? 7 : 4, 3.1);
     }
   }
 
@@ -1133,11 +1139,12 @@ export class SparrowController {
     this.jumpQueued = false;
     this.interactQueued = false;
     this.chirpQueued = false;
+    this.fireQueued = false;
 
     if (frozen) {
       this.inputEnabled = false;
       this.dizzyState = 'none';
-      this.dizzyTimer = 0;
+      this.tumbleTimer = 0;
       this.bonkTimer = 0;
       this.velocity.set(0, 0, 0);
       this.bankAngle = 0;
@@ -1250,6 +1257,9 @@ export class SparrowController {
     if (this.chirpOpen > 0) this.chirpOpen = Math.max(0, this.chirpOpen - clampedDt * 3.6);
     if (this.bonkTimer > 0) this.bonkTimer = Math.max(0, this.bonkTimer - clampedDt);
     if (this.bonkCooldown > 0) this.bonkCooldown = Math.max(0, this.bonkCooldown - clampedDt);
+    if (this.tumbleTimer > 0) this.tumbleTimer = Math.max(0, this.tumbleTimer - clampedDt);
+    if (this.fireCooldown > 0) this.fireCooldown = Math.max(0, this.fireCooldown - clampedDt);
+    if (this.gunShockCooldown > 0) this.gunShockCooldown = Math.max(0, this.gunShockCooldown - clampedDt);
     if (this.multiSpaceWindow > 0) this.multiSpaceWindow = Math.max(0, this.multiSpaceWindow - clampedDt);
     if (this.jumpBufferTimer > 0) this.jumpBufferTimer = Math.max(0, this.jumpBufferTimer - clampedDt);
     if (this.peckTimer > 0) this.peckTimer = Math.max(0, this.peckTimer - clampedDt);
@@ -1276,19 +1286,13 @@ export class SparrowController {
       this.consumeBufferedJump();
       this.interactQueued = false;
       this.chirpQueued = false;
+      this.fireQueued = false;
       this.velocity.set(0, 0, 0);
       this.bankAngle = 0;
       this.pitchAngle = 0;
       if (this.mode === 'flying' && this.flapAnimTimer < 0.25) {
         this.flapAnimTimer = 0.72;
       }
-    } else if (this.dizzyState !== 'none') {
-      this.consumeBufferedJump();
-      this.interactQueued = false;
-      this.chirpQueued = false;
-      this.updateDizzySequence(clampedDt);
-      this.enforceLockedCageBounds();
-      this.enforceAtelierRoomBoundaries(_prevUpdatePos);
     } else {
       if (this.chirpQueued) {
         this.chirpQueued = false;
@@ -1403,6 +1407,26 @@ export class SparrowController {
       this.enforceLockedCageBounds();
       this.enforceAtelierRoomBoundaries(_prevUpdatePos);
       this.jumpQueued = false;
+
+      if (this.gunEquipped && this.getAimRay && !this.introLookTarget) {
+        this.getAimRay(_aimOrigin, _aimDir);
+        const worldAimPitch = Math.asin(Math.max(-0.96, Math.min(0.96, -_aimDir.y)));
+        const localAimPitch = Math.max(-0.92, Math.min(0.92, worldAimPitch - this.pitchAngle * 0.65));
+        this.gunAimPitch += (localAimPitch - this.gunAimPitch) * Math.min(1, clampedDt * 18.0);
+      } else {
+        this.gunAimPitch += (0 - this.gunAimPitch) * Math.min(1, clampedDt * 14.0);
+      }
+
+      const wantsFire =
+        this.fireQueued ||
+        this.holdingMouseLeft ||
+        (this.gunEquipped && this.keys.has('Space'));
+      if (this.gunEquipped && this.inputEnabled && !this.introLookTarget && wantsFire && this.fireCooldown <= 0) {
+        this.fireQueued = false;
+        this.fireGun();
+      } else {
+        this.fireQueued = false;
+      }
     }
 
     this.selfHealIfCorrupted(_prevUpdatePos);
@@ -1447,15 +1471,22 @@ export class SparrowController {
         perchSlopeZ = m * (ux * sinY + uz * cosY);
       }
     }
+    const tumblePhase =
+      this.tumbleTimer > 0
+        ? 1.0 - this.tumbleTimer / Math.max(0.01, this.tumbleDuration)
+        : 0;
     this.sparrowMesh.updatePose({
       dt: clampedDt,
       elapsed,
       mode: this.mode,
       isBraking: this.mode === 'flying' && axesNow.braking,
       wingTuck: this.wingTuckAmount,
-      bonkPhase: this.bonkTimer > 0 ? this.bonkTimer / 0.5 : 0,
+      bonkPhase: this.bonkTimer > 0 ? this.bonkTimer / 0.3 : 0,
       dizzyState: this.dizzyState,
-      dizzyPhase: this.dizzyState === 'shaking' ? 1.0 - Math.max(0, this.dizzyTimer) / 0.54 : 0,
+      dizzyPhase: 0,
+      tumblePhase,
+      tumbleDir: this.tumbleDir,
+      gunAimPitch: this.gunAimPitch,
       perchGrip,
       perchArrival,
       perchSettleOffset,
@@ -1483,6 +1514,7 @@ export class SparrowController {
     this.sparrowMesh.root.updateMatrixWorld(true);
 
     this.updateActiveDroppings(clampedDt);
+    this.updateActiveBullets(clampedDt);
 
     if (this.carriedProp) {
       if (this.carriedProp.consumed) {
@@ -1603,23 +1635,24 @@ export class SparrowController {
     const beforeZ = this.position.z;
 
     if (prevInRoom) {
+      const bounceFactor = this.mode === 'flying' ? 1.52 : 1.0;
       if (this.position.x < ATELIER_INNER_X_MIN) {
         this.position.x = ATELIER_INNER_X_MIN;
-        if (this.velocity.x < 0) this.velocity.x = 0;
+        if (this.velocity.x < 0) this.velocity.x = -this.velocity.x * (bounceFactor - 1);
       }
       if (this.position.z < ATELIER_INNER_Z_MIN) {
         this.position.z = ATELIER_INNER_Z_MIN;
-        if (this.velocity.z < 0) this.velocity.z = 0;
+        if (this.velocity.z < 0) this.velocity.z = -this.velocity.z * (bounceFactor - 1);
       } else if (this.position.z > ATELIER_INNER_Z_MAX) {
         this.position.z = ATELIER_INNER_Z_MAX;
-        if (this.velocity.z > 0) this.velocity.z = 0;
+        if (this.velocity.z > 0) this.velocity.z = -this.velocity.z * (bounceFactor - 1);
       }
       if (this.position.y < ATELIER_INNER_Y_MIN) {
         this.position.y = ATELIER_INNER_Y_MIN;
         if (this.velocity.y < 0) this.velocity.y = 0;
       } else if (this.position.y > ATELIER_INNER_Y_MAX) {
         this.position.y = ATELIER_INNER_Y_MAX;
-        if (this.velocity.y > 0) this.velocity.y = 0;
+        if (this.velocity.y > 0) this.velocity.y = -this.velocity.y * (bounceFactor - 1);
       }
 
       // South plaster chimney breast (`x: [-67.6, -56.4], y >= 35.8, front z = 26.725`)
@@ -1994,7 +2027,7 @@ export class SparrowController {
           : 7.8;
       const hopSpeed = baseHopSpeed * (0.48 + 0.52 * moveLen);
       const hopCadence = (indoors ? 3.9 : 5.4) * (0.74 + 0.26 * moveLen);
-      if (moveLen > 0.16 && this.bonkTimer <= 0.25) {
+      if (moveLen > 0.16) {
         const invLen = 1.0 / moveLen;
         const dirX = moveDir.x * invLen;
         const dirZ = moveDir.z * invLen;
@@ -2013,7 +2046,7 @@ export class SparrowController {
         const surge = 0.65 + Math.sin(this.hopPhase * Math.PI) * 0.65;
         this.velocity.x = dirX * hopSpeed * surge;
         this.velocity.z = dirZ * hopSpeed * surge;
-      } else if (this.bonkTimer <= 0.25) {
+      } else {
         this.hopPhase = Math.max(0, this.hopPhase - dt * 6.0);
         this.velocity.x *= Math.pow(0.001, dt);
         this.velocity.z *= Math.pow(0.001, dt);
@@ -2243,21 +2276,15 @@ export class SparrowController {
       waterBasinAtXZ &&
       Math.abs(this.position.y - (waterBasinAtXZ.surfaceY + 0.35)) < 1.15
     ) {
-      if (this.dizzyState === 'none') {
-        this.position.y = waterBasinAtXZ.surfaceY + 0.40;
-        this.velocity.y = 4.6;
-        this.isHopAirborne = true;
-        this.multiSpaceWindow = 0.44;
-        this.hopPhase = 0.18;
-        this.flapAnimTimer = Math.max(this.flapAnimTimer, 0.24);
-        _ripplePos.set(this.position.x, waterBasinAtXZ.surfaceY, this.position.z);
-        this.fx.spawnWaterSplash(_ripplePos, 0.62);
-        this.audio.playWaterPlop(this.position);
-      } else {
-        const buoyantY = waterBasinAtXZ.surfaceY + 0.35;
-        this.position.y += (buoyantY - this.position.y) * Math.min(1, dt * 18);
-        this.velocity.y = 0;
-      }
+      this.position.y = waterBasinAtXZ.surfaceY + 0.40;
+      this.velocity.y = 4.6;
+      this.isHopAirborne = true;
+      this.multiSpaceWindow = 0.44;
+      this.hopPhase = 0.18;
+      this.flapAnimTimer = Math.max(this.flapAnimTimer, 0.24);
+      _ripplePos.set(this.position.x, waterBasinAtXZ.surfaceY, this.position.z);
+      this.fx.spawnWaterSplash(_ripplePos, 0.62);
+      this.audio.playWaterPlop(this.position);
     } else {
       if (hSpeed < 5.2 && this.tryAutoPerchOnNearbyLedge(1.15)) {
         return;
@@ -2336,98 +2363,94 @@ export class SparrowController {
     const holdingFlapCruise =
       (this.keys.has('Space') || axes.mobileClimb > 0.05) && this.flightStamina > 0.05;
 
-    if (this.bonkTimer <= 0.35) {
-      if (axes.braking) {
-        this.wingTuckAmount = 0;
-        hSpeed = Math.max(1.5, hSpeed * Math.pow(0.06, dt));
-        if (this.velocity.y < -5.2) {
-          this.velocity.y += (-5.2 - this.velocity.y) * Math.min(1, dt * 9.5);
-        } else {
-          this.velocity.y = Math.max(-5.2, this.velocity.y - 9.0 * dt);
-        }
-        this.pitchAngle += (-0.58 - this.pitchAngle) * Math.min(1, dt * 8);
-      } else if (axes.diving) {
-        this.wingTuckAmount = 0.45;
-        this.velocity.y = Math.max(-22.0, this.velocity.y - (22.0 + weightPenalty) * dt);
-        hSpeed = Math.min(22.5, hSpeed + 9.5 * dt);
-        this.pitchAngle += (0.72 - this.pitchAngle) * Math.min(1, dt * 8);
-      } else if (holdingFlapCruise && this.flapAnimTimer <= 0.45) {
-        const prevBound = this.boundCycleTimer;
-        this.boundCycleTimer = (this.boundCycleTimer + dt * 2.4) % 1.0;
-        if (this.boundCycleTimer < prevBound) {
-          this.flightWingbeatTimer = 0.135;
-          this.audio.playWingFlap(0.55);
-        }
-
-        this.flightStamina = Math.max(0.0, this.flightStamina - dt * 0.14);
-        const targetCruise = 12.8 - weightPenalty * 0.7;
-        const speedDragRate = hSpeed > targetCruise ? 1.4 : 3.8;
-        hSpeed += (targetCruise - hSpeed) * Math.min(1, dt * speedDragRate);
-
-        if (this.boundCycleTimer < 0.58) {
-          this.wingTuckAmount = 0.0;
-          this.flapAnimTimer = Math.max(this.flapAnimTimer, 0.24);
-          const burstLift =
-            (2.8 + axes.mobileClimb * 2.8 - weightPenalty * 0.65) *
-            (0.45 + 0.55 * this.flightStamina);
-          if (this.velocity.y < -8.4) {
-            const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
-            const shedDown = Math.max(0, nextVy - this.velocity.y);
-            this.velocity.y = nextVy;
-            hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
-          } else {
-            this.velocity.y += (burstLift - this.velocity.y) * Math.min(1, dt * 4.5);
-          }
-        } else {
-          this.wingTuckAmount = 0.65;
-          this.flapAnimTimer = 0.0;
-          if (this.velocity.y < -8.4) {
-            const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
-            const shedDown = Math.max(0, nextVy - this.velocity.y);
-            this.velocity.y = nextVy;
-            hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
-          } else {
-            this.velocity.y = Math.max(-8.2, this.velocity.y - (13.5 + weightPenalty) * dt);
-          }
-        }
-
-        const climbRatio = Math.max(-0.75, Math.min(0.75, -this.velocity.y / 12.0));
-        this.pitchAngle += (climbRatio - this.pitchAngle) * Math.min(1, dt * 7);
+    if (axes.braking) {
+      this.wingTuckAmount = 0;
+      hSpeed = Math.max(1.5, hSpeed * Math.pow(0.06, dt));
+      if (this.velocity.y < -5.2) {
+        this.velocity.y += (-5.2 - this.velocity.y) * Math.min(1, dt * 9.5);
       } else {
-        // Natural glide / dive-to-glide swoop pullout
-        this.wingTuckAmount = 0.0;
-        const targetCruise = axes.forward > 0.1 ? 11.4 : Math.max(6.2, hSpeed * Math.pow(0.62, dt));
-        const dragRate = hSpeed > 13.0 ? 1.25 : 3.0;
-        hSpeed += (targetCruise - hSpeed) * Math.min(1, dt * dragRate);
+        this.velocity.y = Math.max(-5.2, this.velocity.y - 9.0 * dt);
+      }
+      this.pitchAngle += (-0.58 - this.pitchAngle) * Math.min(1, dt * 8);
+    } else if (axes.diving) {
+      this.wingTuckAmount = 0.45;
+      this.velocity.y = Math.max(-22.0, this.velocity.y - (22.0 + weightPenalty) * dt);
+      hSpeed = Math.min(22.5, hSpeed + 9.5 * dt);
+      this.pitchAngle += (0.72 - this.pitchAngle) * Math.min(1, dt * 8);
+    } else if (holdingFlapCruise && this.flapAnimTimer <= 0.45) {
+      const prevBound = this.boundCycleTimer;
+      this.boundCycleTimer = (this.boundCycleTimer + dt * 2.4) % 1.0;
+      if (this.boundCycleTimer < prevBound) {
+        this.flightWingbeatTimer = 0.135;
+        this.audio.playWingFlap(0.55);
+      }
 
+      this.flightStamina = Math.max(0.0, this.flightStamina - dt * 0.14);
+      const targetCruise = 12.8 - weightPenalty * 0.7;
+      const speedDragRate = hSpeed > targetCruise ? 1.4 : 3.8;
+      hSpeed += (targetCruise - hSpeed) * Math.min(1, dt * speedDragRate);
+
+      if (this.boundCycleTimer < 0.58) {
+        this.wingTuckAmount = 0.0;
+        this.flapAnimTimer = Math.max(this.flapAnimTimer, 0.24);
+        const burstLift =
+          (2.8 + axes.mobileClimb * 2.8 - weightPenalty * 0.65) *
+          (0.45 + 0.55 * this.flightStamina);
         if (this.velocity.y < -8.4) {
           const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
           const shedDown = Math.max(0, nextVy - this.velocity.y);
           this.velocity.y = nextVy;
           hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
         } else {
-          const glideGravity = 12.4 + weightPenalty;
-          const minSink = -8.4 - weightPenalty * 0.5;
-          this.velocity.y = Math.max(minSink, this.velocity.y - glideGravity * dt);
+          this.velocity.y += (burstLift - this.velocity.y) * Math.min(1, dt * 4.5);
         }
-
-        const climbRatio = Math.max(-0.78, Math.min(0.78, -this.velocity.y / 11.5));
-        this.pitchAngle += (climbRatio - this.pitchAngle) * Math.min(1, dt * 6.5);
+      } else {
+        this.wingTuckAmount = 0.65;
+        this.flapAnimTimer = 0.0;
+        if (this.velocity.y < -8.4) {
+          const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
+          const shedDown = Math.max(0, nextVy - this.velocity.y);
+          this.velocity.y = nextVy;
+          hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
+        } else {
+          this.velocity.y = Math.max(-8.2, this.velocity.y - (13.5 + weightPenalty) * dt);
+        }
       }
 
-      const curDirX = hSpeed > 0.01 ? this.velocity.x / hSpeed : fwdX;
-      const curDirZ = hSpeed > 0.01 ? this.velocity.z / hSpeed : fwdZ;
-      const steerBlend = Math.min(1, dt * 7.5);
-      _nextDir2.set(
-        curDirX + (fwdX - curDirX) * steerBlend,
-        curDirZ + (fwdZ - curDirZ) * steerBlend
-      );
-      if (_nextDir2.lengthSq() > 0.0001) _nextDir2.normalize();
-      this.velocity.x = _nextDir2.x * hSpeed;
-      this.velocity.z = _nextDir2.y * hSpeed;
+      const climbRatio = Math.max(-0.75, Math.min(0.75, -this.velocity.y / 12.0));
+      this.pitchAngle += (climbRatio - this.pitchAngle) * Math.min(1, dt * 7);
     } else {
-      this.velocity.y -= 14.0 * dt;
+      // Natural glide / dive-to-glide swoop pullout
+      this.wingTuckAmount = 0.0;
+      const targetCruise = axes.forward > 0.1 ? 11.4 : Math.max(6.2, hSpeed * Math.pow(0.62, dt));
+      const dragRate = hSpeed > 13.0 ? 1.25 : 3.0;
+      hSpeed += (targetCruise - hSpeed) * Math.min(1, dt * dragRate);
+
+      if (this.velocity.y < -8.4) {
+        const nextVy = this.velocity.y + (-8.4 - this.velocity.y) * Math.min(1, dt * 8.5);
+        const shedDown = Math.max(0, nextVy - this.velocity.y);
+        this.velocity.y = nextVy;
+        hSpeed = Math.min(26.5, hSpeed + shedDown * 0.45);
+      } else {
+        const glideGravity = 12.4 + weightPenalty;
+        const minSink = -8.4 - weightPenalty * 0.5;
+        this.velocity.y = Math.max(minSink, this.velocity.y - glideGravity * dt);
+      }
+
+      const climbRatio = Math.max(-0.78, Math.min(0.78, -this.velocity.y / 11.5));
+      this.pitchAngle += (climbRatio - this.pitchAngle) * Math.min(1, dt * 6.5);
     }
+
+    const curDirX = hSpeed > 0.01 ? this.velocity.x / hSpeed : fwdX;
+    const curDirZ = hSpeed > 0.01 ? this.velocity.z / hSpeed : fwdZ;
+    const steerBlend = Math.min(1, dt * 7.5);
+    _nextDir2.set(
+      curDirX + (fwdX - curDirX) * steerBlend,
+      curDirZ + (fwdZ - curDirZ) * steerBlend
+    );
+    if (_nextDir2.lengthSq() > 0.0001) _nextDir2.normalize();
+    this.velocity.x = _nextDir2.x * hSpeed;
+    this.velocity.z = _nextDir2.y * hSpeed;
 
     // Subtle rhythmic wingbeat foley while flying (active flap, airbrake flutter, or gentle flight flutter)
     this.flightWingbeatTimer -= dt;
@@ -2479,31 +2502,37 @@ export class SparrowController {
           }
           const impactSpeed = this.velocity.length();
 
-          if (this.tryAutoPerchOnNearbyLedge(1.38 + stepLen)) {
+          // Unbreakable high-speed dive/roof bounce: playfully rebound back into flight with tumble
+          if (!this.tutorialSafeZone && !axes.braking && impactSpeed > 15.0) {
+            this.position.set(hit.point.x, hit.point.y + GROUND_FOOT_CLEARANCE + 0.14, hit.point.z);
+            this.bounceOffSurface(hit.point, hit.normal, hit.body, impactSpeed, 0.58);
+          } else {
+            if (this.tryAutoPerchOnNearbyLedge(1.38 + stepLen)) {
+              return;
+            }
+
+            this.position.set(hit.point.x, hit.point.y + GROUND_FOOT_CLEARANCE, hit.point.z);
+            this.velocity.y = 0;
+            this.isHopAirborne = false;
+            this.coyoteTimer = 0.12;
+            this.mode = 'grounded';
+            this.wingTuckAmount = 0;
+            this.bankAngle = 0;
+            this.pitchAngle = 0;
+            this.perchSettleDuration = 0.20;
+            this.perchSettleTimer = 0.20;
+            this.perchSettleAmp = Math.min(0.034, 0.014 + impactSpeed * 0.0018);
+            const surf = this.detectGroundSurfaceType(this.position);
+            this.audio.playLanding(impactSpeed, surf);
+            this.fx.spawnBurst(hit.point, impactSpeed > 10 ? 8 : 5, false, impactSpeed > 10 ? 3.2 : 2.2);
             return;
           }
-
-          this.position.set(hit.point.x, hit.point.y + GROUND_FOOT_CLEARANCE, hit.point.z);
-          this.velocity.y = 0;
-          this.isHopAirborne = false;
-          this.coyoteTimer = 0.12;
-          this.mode = 'grounded';
-          this.wingTuckAmount = 0;
-          this.bankAngle = 0;
-          this.pitchAngle = 0;
-          this.perchSettleDuration = 0.20;
-          this.perchSettleTimer = 0.20;
-          this.perchSettleAmp = Math.min(0.034, 0.014 + impactSpeed * 0.0018);
-          const surf = this.detectGroundSurfaceType(this.position);
-          this.audio.playLanding(impactSpeed, surf);
-          this.fx.spawnBurst(hit.point, impactSpeed > 10 ? 8 : 5, false, impactSpeed > 10 ? 3.2 : 2.2);
-          return;
         } else if (!submergedFloor) {
-          if (hit.distance < 0.52) {
-            this.position.addScaledVector(hit.normal, 0.52 - hit.distance);
+          if (hit.distance < 0.54) {
+            this.position.addScaledVector(hit.normal, 0.54 - hit.distance);
           }
 
-          if (this.velocity.y < 3.6 && this.tryAutoPerchOnNearbyLedge(1.8)) {
+          if (this.velocity.y < 3.6 && this.velocity.length() < 12.5 && this.tryAutoPerchOnNearbyLedge(1.8)) {
             return;
           }
 
@@ -2511,18 +2540,11 @@ export class SparrowController {
           if (vn < 0) {
             const impactIntoWall = -vn;
             if (this.tutorialSafeZone) {
-              this.velocity.addScaledVector(hit.normal, -vn * 1.05);
+              this.velocity.addScaledVector(hit.normal, -vn * 1.48);
+            } else if (impactIntoWall > 5.4) {
+              this.bounceOffSurface(hit.point, hit.normal, hit.body, impactIntoWall, 0.68);
             } else {
-              const meta = this.physics.getBumpMetadata(hit.body);
-              const isSoftOrInteractive = meta?.causesDizzy === false || (hit.body && hit.body.mass > 0);
-              if (!isSoftOrInteractive && Math.abs(hit.normal.y) < 0.38 && impactIntoWall > 6.5) {
-                this.triggerDizzyWallFall(hit.point, hit.normal, hit.body, impactIntoWall);
-                return;
-              } else if (impactIntoWall > 4.6 && this.bonkCooldown <= 0) {
-                this.triggerCuteBump(hit.point, hit.normal, hit.body, impactIntoWall);
-              } else {
-                this.velocity.addScaledVector(hit.normal, -vn * 1.15);
-              }
+              this.velocity.addScaledVector(hit.normal, -vn * 1.52);
             }
           }
         }
@@ -2547,7 +2569,12 @@ export class SparrowController {
           }
           const vn = this.velocity.dot(wHit.normal);
           if (vn < 0) {
-            this.velocity.addScaledVector(wHit.normal, -vn * 1.03);
+            if (!this.tutorialSafeZone && -vn > 7.5 && this.bonkCooldown <= 0) {
+              _fxPos.copy(this.position).addScaledVector(_rayDir, wHit.distance);
+              this.bounceOffSurface(_fxPos, wHit.normal, null, -vn, 0.65);
+            } else {
+              this.velocity.addScaledVector(wHit.normal, -vn * 1.45);
+            }
           }
         }
       }
@@ -2565,7 +2592,7 @@ export class SparrowController {
         }
         const vn = this.velocity.dot(ceilHit.normal);
         if (vn < 0) {
-          this.velocity.addScaledVector(ceilHit.normal, -vn * 1.03);
+          this.velocity.addScaledVector(ceilHit.normal, -vn * 1.48);
         }
       }
     }
@@ -2585,7 +2612,7 @@ export class SparrowController {
         }
         const vn = this.velocity.dot(cornerHit.normal);
         if (vn < 0) {
-          this.velocity.addScaledVector(cornerHit.normal, -vn * 1.02);
+          this.velocity.addScaledVector(cornerHit.normal, -vn * 1.45);
         }
       }
     }
@@ -2679,10 +2706,17 @@ export class SparrowController {
       }
     } else if (this.position.y < -0.25) {
       this.position.y = GROUND_FOOT_CLEARANCE;
-      this.velocity.y = 0;
-      this.isHopAirborne = false;
-      this.coyoteTimer = 0.12;
-      this.mode = 'grounded';
+      if (this.velocity.y < -6.5) {
+        this.velocity.y = Math.max(5.2, -this.velocity.y * 0.56);
+        this.tumbleDuration = 0.28;
+        this.tumbleTimer = 0.28;
+        this.tumbleDir = Math.random() < 0.5 ? 1 : -1;
+      } else {
+        this.velocity.y = 0;
+        this.isHopAirborne = false;
+        this.coyoteTimer = 0.12;
+        this.mode = 'grounded';
+      }
     }
 
     this.applyPerimeterBreeze(dt);
@@ -3378,6 +3412,213 @@ export class SparrowController {
 
     _targetHeadLook.set(0, 0);
     this.headLookLocal.lerp(_targetHeadLook, smoothRate);
+  }
+
+  private fireGun(): void {
+    this.fireCooldown = 0.16;
+    this.sparrowMesh.root.updateMatrixWorld(true);
+    this.sparrowMesh.getMuzzleWorldPosition(_muzzleWorldPos);
+
+    if (this.getAimRay) {
+      this.getAimRay(_aimOrigin, _aimDir);
+      const birdDist = _aimOrigin.distanceTo(this.position);
+      _aimOrigin.addScaledVector(_aimDir, Math.max(0.25, birdDist * 0.72));
+      const aimHit = this.physics.raycastGround(
+        _aimOrigin,
+        _aimDir,
+        140,
+        this.carriedProp?.body,
+        _aimRayHit
+      );
+      if (aimHit.hit && aimHit.distance > 1.2) {
+        _aimTarget.copy(aimHit.point);
+      } else {
+        _aimTarget.copy(_aimOrigin).addScaledVector(_aimDir, 120);
+      }
+      _bulletDir.subVectors(_aimTarget, _muzzleWorldPos);
+      if (_bulletDir.lengthSq() > 1e-4) {
+        _bulletDir.normalize();
+      } else {
+        _bulletDir.copy(_aimDir).normalize();
+      }
+    } else {
+      this.getForwardVector(_bulletDir);
+    }
+
+    let slot: ActiveBullet | null = null;
+    const len = this.activeBullets.length;
+    for (let step = 0; step < len; step++) {
+      const idx = (this.bulletCursor + step) % len;
+      if (!this.activeBullets[idx].active) {
+        slot = this.activeBullets[idx];
+        this.bulletCursor = (idx + 1) % len;
+        break;
+      }
+    }
+    if (!slot) {
+      slot = this.activeBullets[this.bulletCursor];
+      this.bulletCursor = (this.bulletCursor + 1) % len;
+    }
+
+    slot.pos.copy(_muzzleWorldPos);
+    slot.prevPos.copy(_muzzleWorldPos);
+    slot.vel.copy(_bulletDir).multiplyScalar(BULLET_SPEED);
+    slot.age = 0;
+    slot.active = true;
+    slot.mesh.position.copy(_muzzleWorldPos);
+    slot.mesh.quaternion.setFromUnitVectors(_bulletUpAxis, _bulletDir);
+    slot.mesh.visible = true;
+
+    this.sparrowMesh.triggerGunRecoil();
+    this.audio.playGunshot(this.position);
+    this.fx.spawnBurst(_muzzleWorldPos, 3, true, 2.2);
+
+    if (this.mode === 'flying') {
+      this.velocity.addScaledVector(_bulletDir, -1.65);
+    } else if (this.mode === 'grounded') {
+      this.velocity.x -= _bulletDir.x * 1.1;
+      this.velocity.z -= _bulletDir.z * 1.1;
+    }
+
+    this.onGunFiredCallback?.(_muzzleWorldPos, _bulletDir);
+    if (this.gunShockCooldown <= 0) {
+      this.gunShockCooldown = 0.55;
+      this.npcs?.notifyAcousticShock?.(this.position, 'topple');
+    }
+  }
+
+  private updateActiveBullets(dt: number): void {
+    for (let i = 0; i < this.activeBullets.length; i++) {
+      const slot = this.activeBullets[i];
+      if (!slot.active) continue;
+
+      slot.age += dt;
+      if (
+        slot.age > BULLET_MAX_AGE ||
+        Math.abs(slot.pos.x) > 220 ||
+        Math.abs(slot.pos.z) > 220 ||
+        slot.pos.y < -15 ||
+        slot.pos.y > 220
+      ) {
+        slot.active = false;
+        slot.mesh.visible = false;
+        continue;
+      }
+
+      slot.prevPos.copy(slot.pos);
+      _bulletNextPos.copy(slot.pos).addScaledVector(slot.vel, dt);
+      _bulletSegDir.subVectors(_bulletNextPos, slot.prevPos);
+      const segLen = _bulletSegDir.length();
+
+      if (segLen > 1e-5) {
+        _bulletSegDir.divideScalar(segLen);
+
+        let rayHit = this.physics.raycastGround(
+          slot.prevPos,
+          _bulletSegDir,
+          segLen + 0.06,
+          this.carriedProp?.body,
+          _bulletRayHit
+        );
+        if (rayHit.hit && this.npcs?.isHumanCollider?.(rayHit.body)) {
+          rayHit = this.physics.raycastGround(
+            slot.prevPos,
+            _bulletSegDir,
+            segLen + 0.06,
+            rayHit.body ?? undefined,
+            _bulletRayHit
+          );
+        }
+
+        const midX = (slot.prevPos.x + _bulletNextPos.x) * 0.5;
+        const midY = (slot.prevPos.y + _bulletNextPos.y) * 0.5;
+        const midZ = (slot.prevPos.z + _bulletNextPos.z) * 0.5;
+        const basin = this.physics.getBasinAtXZ(midX, midZ, midY);
+        let waterHit = false;
+        let waterDist = Infinity;
+        if (
+          basin &&
+          slot.prevPos.y >= basin.surfaceY - 0.06 &&
+          _bulletNextPos.y <= basin.surfaceY
+        ) {
+          const denom = Math.max(1e-4, slot.prevPos.y - _bulletNextPos.y);
+          const frac = Math.max(0, Math.min(1, (slot.prevPos.y - basin.surfaceY) / denom));
+          waterHit = true;
+          waterDist = frac * segLen;
+        }
+
+        const solidLimitDist = Math.min(
+          waterHit ? waterDist : Infinity,
+          rayHit.hit ? rayHit.distance : Infinity
+        );
+        if (solidLimitDist < segLen) {
+          _bulletWaterPt.copy(slot.prevPos).addScaledVector(_bulletSegDir, solidLimitDist);
+        } else {
+          _bulletWaterPt.copy(_bulletNextPos);
+        }
+
+        const npcHit =
+          this.npcs?.checkBulletHit?.(slot.prevPos, _bulletWaterPt, this.position) ?? null;
+        if (npcHit?.hit) {
+          this.fx.spawnBurst(npcHit.point, 6, true, 3.6);
+          this.audio.addChaosImpulse(0.42);
+          slot.active = false;
+          slot.mesh.visible = false;
+          continue;
+        }
+
+        let hitSwitch = false;
+        const segMidX = (slot.prevPos.x + _bulletWaterPt.x) * 0.5;
+        const segMidZ = (slot.prevPos.z + _bulletWaterPt.z) * 0.5;
+        this.physics.queryPeckSwitchesInRadius(segMidX, segMidZ, segLen * 0.6 + 1.8, (sw) => {
+          if (sw.cooldown > 0) return;
+          _bulletSwitchPos.subVectors(sw.position, slot.prevPos);
+          const proj = Math.max(0, Math.min(solidLimitDist, _bulletSwitchPos.dot(_bulletSegDir)));
+          _bulletSwitchPos.copy(slot.prevPos).addScaledVector(_bulletSegDir, proj);
+          const r = sw.radius + 0.35;
+          if (_bulletSwitchPos.distanceToSquared(sw.position) <= r * r) {
+            sw.cooldown = 0.09;
+            this.fx.spawnBurst(sw.position, 6, true, 3.0);
+            sw.onPeck();
+            hitSwitch = true;
+            return false;
+          }
+        });
+        if (hitSwitch) {
+          slot.active = false;
+          slot.mesh.visible = false;
+          continue;
+        }
+
+        if (waterHit && (!rayHit.hit || waterDist <= rayHit.distance)) {
+          _bulletWaterPt.copy(slot.prevPos).addScaledVector(_bulletSegDir, waterDist);
+          _bulletWaterPt.y = basin!.surfaceY;
+          this.fx.spawnWaterSplash(_bulletWaterPt, 0.72);
+          this.audio.playWaterPlop(_bulletWaterPt);
+          slot.active = false;
+          slot.mesh.visible = false;
+          continue;
+        }
+
+        if (rayHit.hit) {
+          const hitResult = this.physics.strikeBodyWithBullet(
+            rayHit.body,
+            rayHit.point,
+            _bulletSegDir
+          );
+          if (!hitResult.shattered) {
+            this.fx.spawnBurst(rayHit.point, 5, false, 3.4);
+            this.audio.playPeckTap(hitResult.surface, rayHit.point);
+          }
+          slot.active = false;
+          slot.mesh.visible = false;
+          continue;
+        }
+      }
+
+      slot.pos.copy(_bulletNextPos);
+      slot.mesh.position.copy(slot.pos);
+    }
   }
 
   private updateVisualTrailsAndShadow(dt: number): void {

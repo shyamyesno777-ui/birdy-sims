@@ -2155,6 +2155,102 @@ export class NPCManager {
   }
 
   /**
+   * Swept projectile hit test against neighborhood citizens, foraging pigeons, and companion songbirds.
+   */
+  public checkBulletHit(
+    prevPos: THREE.Vector3,
+    nextPos: THREE.Vector3,
+    birdPos: THREE.Vector3
+  ): { hit: boolean; kind: 'human' | 'pigeon' | 'companion'; distance: number; point: THREE.Vector3 } | null {
+    _dropRayDir.subVectors(nextPos, prevPos);
+    const segLen = _dropRayDir.length();
+    if (segLen < 1e-5) return null;
+    _dropRayDir.divideScalar(segLen);
+
+    let bestDist = segLen + 0.1;
+    let bestHuman: GiantHumanInstance | null = null;
+
+    for (const h of this.humans.values()) {
+      const midX = (prevPos.x + nextPos.x) * 0.5 - h.root.position.x;
+      const midZ = (prevPos.z + nextPos.z) * 0.5 - h.root.position.z;
+      const reachR = 2.6 + segLen * 0.5;
+      if (midX * midX + midZ * midZ > reachR * reachR) continue;
+
+      h.root.updateMatrixWorld(true);
+      _dropRaycaster.set(prevPos, _dropRayDir);
+      _dropRaycaster.near = 0;
+      _dropRaycaster.far = segLen + 0.1;
+      _dropIntersects.length = 0;
+      _dropRaycaster.intersectObjects(
+        [h.headPivot, h.torsoPivot, h.legLeft.hip, h.legRight.hip],
+        true,
+        _dropIntersects
+      );
+      if (_dropIntersects.length > 0 && _dropIntersects[0].distance < bestDist) {
+        bestDist = _dropIntersects[0].distance;
+        bestHuman = h;
+        _dropBestPoint.copy(_dropIntersects[0].point);
+      }
+    }
+
+    if (bestHuman) {
+      const st = this.getSocialState(bestHuman.config.id);
+      st.affinity = Math.max(-1.0, st.affinity - 0.35);
+      st.peckedTimer = 0.55;
+      bestHuman.drowsy = false;
+      bestHuman.celebrateTimer = 0;
+      bestHuman.waveTimer = 0;
+      bestHuman.curiousTimer = 0;
+      bestHuman.startleTimer = 0.42;
+      bestHuman.shooTimer = 3.0;
+      bestHuman.chaseTarget.copy(birdPos);
+      bestHuman.hasChaseTarget = true;
+      bestHuman.lookAtTimer = 3.6;
+      bestHuman.lookTarget.copy(birdPos);
+
+      this.audio.playHumanGrunt(bestHuman.headWorldPos, bestHuman.voicePitch, 'oof');
+      if (bestHuman.config.id === 'chef') {
+        this.audio.playChefShout(bestHuman.headWorldPos, bestHuman.voicePitch);
+      } else {
+        this.audio.playHumanYell(bestHuman.headWorldPos, bestHuman.voicePitch, 'hey');
+      }
+      this.fx.spawnBurst(_dropBestPoint, 8, false, 3.6);
+      return { hit: true, kind: 'human', distance: bestDist, point: _dropBestPoint };
+    }
+
+    // Check foraging pigeons along swept segment
+    for (let i = 0; i < this.pigeons.length; i++) {
+      const p = this.pigeons[i];
+      _dropToPt.subVectors(p.mesh.root.position, prevPos);
+      const proj = Math.max(0, Math.min(segLen, _dropToPt.dot(_dropRayDir)));
+      _dropClosest.copy(prevPos).addScaledVector(_dropRayDir, proj);
+      if (_dropClosest.distanceToSquared(p.mesh.root.position) <= 0.62 * 0.62 && proj < bestDist) {
+        _dropBestPoint.copy(p.mesh.root.position);
+        this.fx.spawnFeatherBurst(_dropBestPoint, 7, 3.6);
+        this.scatterPigeonFlock(p.forageHome);
+        return { hit: true, kind: 'pigeon', distance: proj, point: _dropBestPoint };
+      }
+    }
+
+    // Check companion songbirds
+    for (let i = 0; i < this.companions.length; i++) {
+      const c = this.companions[i];
+      _dropToPt.subVectors(c.mesh.root.position, prevPos);
+      const proj = Math.max(0, Math.min(segLen, _dropToPt.dot(_dropRayDir)));
+      _dropClosest.copy(prevPos).addScaledVector(_dropRayDir, proj);
+      if (_dropClosest.distanceToSquared(c.mesh.root.position) <= 0.56 * 0.56 && proj < bestDist) {
+        c.echoTimer = 0.05;
+        c.echoIsPlayerReply = true;
+        _dropBestPoint.copy(c.mesh.root.position);
+        this.fx.spawnFeatherBurst(_dropBestPoint, 6, 3.0);
+        return { hit: true, kind: 'companion', distance: proj, point: _dropBestPoint };
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Handles direct close-range player beak pecks on citizens, park pigeons, or companion birds.
    * Pecking a citizen startles them into a shooing reaction and returns a shoo-gust impulse.
    */

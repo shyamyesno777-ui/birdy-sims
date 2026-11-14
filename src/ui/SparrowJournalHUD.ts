@@ -95,6 +95,8 @@ export class SparrowJournalHUD {
   private readonly keyCapEl: HTMLElement;
   private readonly cardEl: HTMLDivElement;
   private readonly toastHost: HTMLDivElement;
+  private readonly crosshairEl: HTMLDivElement;
+  private crosshairRecoilTimer: number | null = null;
 
   private readonly rowElements = new Map<SparrowDeedId, CachedDeedRow>();
   private readonly completed = new Set<SparrowDeedId>();
@@ -206,12 +208,12 @@ export class SparrowJournalHUD {
     this.weatherBtn = document.createElement('button');
     this.weatherBtn.type = 'button';
     this.weatherBtn.className = 'journal-pill journal-env-pill';
-    this.weatherBtn.setAttribute('aria-label', 'Cycle Weather (Key G)');
+    this.weatherBtn.setAttribute('aria-label', 'Cycle Weather (Key V)');
     this.weatherTextEl = document.createElement('span');
     this.weatherTextEl.textContent = 'Clear';
     this.weatherKeyEl = document.createElement('kbd');
     this.weatherKeyEl.className = 'journal-tab-key';
-    this.weatherKeyEl.textContent = 'G';
+    this.weatherKeyEl.textContent = 'V';
     this.weatherBtn.appendChild(this.weatherTextEl);
     this.weatherBtn.appendChild(this.weatherKeyEl);
 
@@ -274,6 +276,17 @@ export class SparrowJournalHUD {
     this.toastHost.setAttribute('aria-live', 'polite');
     parent.appendChild(this.toastHost);
 
+    // Center-screen precision crosshair (hidden until 'G' equips the hidden pistol)
+    this.crosshairEl = document.createElement('div');
+    this.crosshairEl.className = 'gun-crosshair is-hidden';
+    this.crosshairEl.setAttribute('aria-hidden', 'true');
+    for (const part of ['top', 'right', 'bottom', 'left', 'dot']) {
+      const tick = document.createElement('span');
+      tick.className = `gun-crosshair-part is-${part}`;
+      this.crosshairEl.appendChild(tick);
+    }
+    parent.appendChild(this.crosshairEl);
+
     const signal = this.abortCtrl.signal;
     window.addEventListener(
       'pointerdown',
@@ -295,7 +308,7 @@ export class SparrowJournalHUD {
         } else if (e.code === 'KeyT' && this.visible) {
           e.preventDefault();
           this.onCycleTime?.();
-        } else if (e.code === 'KeyG' && this.visible) {
+        } else if (e.code === 'KeyV' && this.visible) {
           e.preventDefault();
           this.onCycleWeather?.();
         } else if (e.code === 'KeyM') {
@@ -349,8 +362,26 @@ export class SparrowJournalHUD {
     );
     this.weatherBtn.setAttribute(
       'aria-label',
-      isMobile ? 'Cycle Weather' : 'Cycle Weather (Key G)'
+      isMobile ? 'Cycle Weather' : 'Cycle Weather (Key V)'
     );
+  }
+
+  public setGunEquipped(equipped: boolean): void {
+    this.crosshairEl.classList.toggle('is-hidden', !equipped);
+  }
+
+  public triggerCrosshairRecoil(): void {
+    this.crosshairEl.classList.remove('is-firing');
+    // Force reflow so rapid shots replay the outward tick kick crisply
+    void this.crosshairEl.offsetWidth;
+    this.crosshairEl.classList.add('is-firing');
+    if (this.crosshairRecoilTimer !== null) {
+      window.clearTimeout(this.crosshairRecoilTimer);
+    }
+    this.crosshairRecoilTimer = window.setTimeout(() => {
+      this.crosshairRecoilTimer = null;
+      this.crosshairEl.classList.remove('is-firing');
+    }, 95);
   }
 
   public isMobileMode(): boolean {
@@ -470,11 +501,16 @@ export class SparrowJournalHUD {
 
   public dispose(): void {
     this.abortCtrl.abort();
+    if (this.crosshairRecoilTimer !== null) {
+      window.clearTimeout(this.crosshairRecoilTimer);
+      this.crosshairRecoilTimer = null;
+    }
     for (const timerId of this.activeTimers) {
       window.clearTimeout(timerId);
     }
     this.activeTimers.clear();
     this.root.remove();
     this.toastHost.remove();
+    this.crosshairEl.remove();
   }
 }

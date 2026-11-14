@@ -661,3 +661,272 @@ canvas {
   box-shadow: 0 2px 8px rgba(28, 22, 18, 0.14);
   will-change: transform;
 }
+
+/* Center-Screen Crosshair for Hidden Pistol Mode */
+.gun-crosshair {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 28px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 25;
+  opacity: 1;
+  transition: opacity 0.14s ease, transform 0.14s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.gun-crosshair.is-hidden {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.75);
+}
+
+.gun-crosshair-part {
+  position: absolute;
+  background: #fffaf0;
+  box-shadow: 0 0 0 1.5px rgba(26, 22, 20, 0.72), 0 1px 4px rgba(18, 16, 15, 0.45);
+  border-radius: 999px;
+  transition: transform 0.08s ease-out;
+}
+
+.gun-crosshair-part.is-dot {
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  transform: translate(-50%, -50%);
+}
+
+.gun-crosshair-part.is-top {
+  left: 50%;
+  top: 1px;
+  width: 2px;
+  height: 7px;
+  transform: translateX(-50%);
+}
+
+.gun-crosshair-part.is-bottom {
+  left: 50%;
+  bottom: 1px;
+  width: 2px;
+  height: 7px;
+  transform: translateX(-50%);
+}
+
+.gun-crosshair-part.is-left {
+  left: 1px;
+  top: 50%;
+  width: 7px;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+.gun-crosshair-part.is-right {
+  right: 1px;
+  top: 50%;
+  width: 7px;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+.gun-crosshair.is-firing .gun-crosshair-part.is-top {
+  transform: translate(-50%, -5px);
+}
+
+.gun-crosshair.is-firing .gun-crosshair-part.is-bottom {
+  transform: translate(-50%, 5px);
+}
+
+.gun-crosshair.is-firing .gun-crosshair-part.is-left {
+  transform: translate(-5px, -50%);
+}
+
+.gun-crosshair.is-firing .gun-crosshair-part.is-right {
+  transform: translate(5px, -50%);
+}
+
+.gun-crosshair.is-firing .gun-crosshair-part.is-dot {
+  transform: translate(-50%, -50%) scale(1.35);
+}
+
+/* Bottom-Left Combat & Crowd Rebellion HUD (No backdrop-filter, matches storybook card aesthetic) */
+.combat-hud {
+  position: fixed;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+  left: calc(env(safe-area-inset-left, 0px) + 14px);
+  z-index: 18;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 0.36s ease, transform 0.36s cubic-bezier(0.22, 1, 0.36, 1), visibility 0.36s ease;
+}
+
+.combat-hud.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(10px);
+}
+
+.combat-card {
+  min-width: 196px;
+  padding: 8px 12px 9px;
+  border-radius: 13px;
+  background: rgba(251, 245, 232, 0.92);
+  color: #29252c;
+  border: 2px solid rgba(68, 56, 46, 0.24);
+  box-shadow: 0 8px 20px rgba(18, 22, 34, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.combat-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.combat-label {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(41, 37, 44, 0.72);
+}
+
+.combat-value {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: #29252c;
+}
+
+.combat-hp-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(58, 45, 36, 0.16);
+  overflow: hidden;
+}
+
+.combat-hp-fill {
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: #3f9154;
+  transition: width 0.14s ease-out, background-color 0.18s ease;
+}
+
+.combat-hp-fill.is-warn {
+  background: #d98e2b;
+}
+
+.combat-hp-fill.is-danger {
+  background: #c93f34;
+}
+
+.combat-stats-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.combat-kills-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: rgba(251, 245, 232, 0.92);
+  border: 2px solid rgba(68, 56, 46, 0.24);
+  box-shadow: 0 6px 16px rgba(18, 22, 34, 0.16);
+}
+
+.combat-kills-num {
+  font-size: 14px;
+  font-weight: 900;
+  color: #29252c;
+}
+
+.combat-rebellion-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 2px solid transparent;
+  box-shadow: 0 6px 16px rgba(18, 22, 34, 0.18);
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.combat-rebellion-badge.is-peaceful {
+  background: rgba(251, 245, 232, 0.88);
+  color: rgba(41, 37, 44, 0.68);
+  border-color: rgba(68, 56, 46, 0.2);
+}
+
+.combat-rebellion-badge.is-skirmish {
+  background: #f5b942;
+  color: #2e1d06;
+  border-color: #b57a16;
+}
+
+.combat-rebellion-badge.is-major {
+  background: #c9382e;
+  color: #fff8f0;
+  border-color: #7d1b14;
+}
+
+.bird-hurt-flash {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 24;
+  opacity: 0;
+  background: radial-gradient(circle at center, rgba(205, 42, 34, 0) 52%, rgba(205, 42, 34, 0.42) 100%);
+  transition: opacity 0.22s ease-out;
+}
+
+.bird-hurt-flash.is-active {
+  opacity: 1;
+  transition: none;
+}
+
+.bird-recover-banner {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 78px);
+  transform: translateX(-50%);
+  z-index: 26;
+  pointer-events: none;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(182, 42, 34, 0.94);
+  color: #fff8f0;
+  border: 2px solid #751711;
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: 0 8px 22px rgba(20, 12, 12, 0.34);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
+}
+
+.bird-recover-banner.is-skirmish-alert {
+  background: rgba(245, 185, 66, 0.96);
+  color: #2e1d06;
+  border-color: #b57a16;
+}
+
+.bird-recover-banner.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, 8px);
+}

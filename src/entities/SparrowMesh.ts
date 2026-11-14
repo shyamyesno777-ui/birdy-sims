@@ -12,6 +12,7 @@ import {
   loftOrganicHull,
   taperedTube,
   tube,
+  rbox,
   rcyl,
   smoothSphere,
   extrudeShape,
@@ -50,6 +51,12 @@ export interface SparrowPoseInput {
   /** 3-stage wall-knockout state: falling -> belly-flopped grounded -> feather-ruffle shaking */
   dizzyState?: DizzyPoseState;
   dizzyPhase?: number;
+  /** 0..1: aerial bounce-tumble recovery spin (does not lock flight controls) */
+  tumblePhase?: number;
+  /** +1 or -1 roll direction for aerial bounce tumble */
+  tumbleDir?: number;
+  /** Optional local aim pitch offset when gun is equipped */
+  gunAimPitch?: number;
   /** 0..1: 0 = flat ledge/cornice toes, 1 = cylindrical rail/wire/branch toe wrap */
   perchGrip?: number;
   /** 1..0: perch approach progress remaining (1 = capture start, 0 = planted on perch) */
@@ -132,6 +139,124 @@ let _sharedBirdMat: THREE.NodeMaterial | null = null;
 let _sharedCatchlightMat: THREE.NodeMaterial | null = null;
 let _sharedCrownGeo: THREE.BufferGeometry | null = null;
 let _sharedCrownMat: THREE.NodeMaterial | null = null;
+let _sharedPistolFrameGeo: THREE.BufferGeometry | null = null;
+let _sharedPistolSlideGeo: THREE.BufferGeometry | null = null;
+let _sharedPistolMat: THREE.NodeMaterial | null = null;
+let _sharedMuzzleFlashGeo: THREE.BufferGeometry | null = null;
+let _sharedMuzzleFlashMat: THREE.NodeMaterial | null = null;
+
+function getOrBuildPistolAssets(): {
+  frameGeo: THREE.BufferGeometry;
+  slideGeo: THREE.BufferGeometry;
+  mat: THREE.NodeMaterial;
+  flashGeo: THREE.BufferGeometry;
+  flashMat: THREE.NodeMaterial;
+} {
+  if (!_sharedPistolMat) {
+    _sharedPistolMat = createPastelMaterial({
+      vertexColors: true,
+      rimStrength: 0.12,
+    });
+  }
+  if (!_sharedPistolFrameGeo) {
+    const gunMetal = 0x3b424d;
+    const darkSteel = 0x262b33;
+    const walnut = 0x6b452e;
+    const brass = 0xd9a84e;
+    const frameParts: THREE.BufferGeometry[] = [
+      // Lower receiver dust cover & frame rail (+Z forward)
+      transformGeo(rbox(0.052, 0.036, 0.23, 0.008, gunMetal, 2, { bottomAO: 0.14 }), {
+        pos: [0, 0.015, 0.045],
+      }),
+      // Angled walnut pistol grip
+      transformGeo(rbox(0.048, 0.125, 0.068, 0.01, walnut, 2, { bottomAO: 0.18 }), {
+        rot: [0.28, 0, 0],
+        pos: [0, -0.056, -0.048],
+      }),
+      // Brass grip medallion
+      transformGeo(rcyl(0.013, 0.013, 0.052, brass, 10), {
+        rot: [0, 0, Math.PI * 0.5],
+        pos: [0, -0.055, -0.048],
+      }),
+      // Trigger guard & trigger
+      transformGeo(rbox(0.018, 0.038, 0.062, 0.004, darkSteel, 2), {
+        pos: [0, -0.022, 0.022],
+      }),
+      transformGeo(rbox(0.01, 0.028, 0.014, 0.003, brass, 2), {
+        rot: [0.22, 0, 0],
+        pos: [0, -0.014, 0.016],
+      }),
+      // Protruding blued barrel tip + dark bore
+      transformGeo(rcyl(0.016, 0.016, 0.075, darkSteel, 12), {
+        rot: [Math.PI * 0.5, 0, 0],
+        pos: [0, 0.048, 0.168],
+      }),
+      transformGeo(rcyl(0.0095, 0.0095, 0.018, 0x0d0f14, 10), {
+        rot: [Math.PI * 0.5, 0, 0],
+        pos: [0, 0.048, 0.204],
+      }),
+    ];
+    _sharedPistolFrameGeo = mergeParts(frameParts);
+    _sharedPistolFrameGeo.computeBoundingSphere();
+  }
+  if (!_sharedPistolSlideGeo) {
+    const slideSteel = 0x525b68;
+    const darkSteel = 0x2a2f38;
+    const sightOrange = 0xf48c38;
+    const slideParts: THREE.BufferGeometry[] = [
+      // Upper reciprocating slide
+      transformGeo(rbox(0.056, 0.046, 0.245, 0.009, slideSteel, 2, { topLift: 0.14 }), {
+        pos: [0, 0.052, 0.042],
+      }),
+      // Rear serrations / hammer housing
+      transformGeo(rbox(0.059, 0.034, 0.052, 0.006, darkSteel, 2), {
+        pos: [0, 0.052, -0.052],
+      }),
+      // Rear sight notch + glowing orange front sight post
+      transformGeo(rbox(0.036, 0.014, 0.014, 0.003, darkSteel, 1), {
+        pos: [0, 0.08, -0.068],
+      }),
+      transformGeo(rbox(0.012, 0.016, 0.018, 0.003, sightOrange, 1), {
+        pos: [0, 0.081, 0.148],
+      }),
+    ];
+    _sharedPistolSlideGeo = mergeParts(slideParts);
+    _sharedPistolSlideGeo.computeBoundingSphere();
+  }
+  if (!_sharedMuzzleFlashMat) {
+    const flashMat = createUnlitPastelFXMaterial(0xffffff, 0.96, true);
+    flashMat.vertexColors = true;
+    _sharedMuzzleFlashMat = flashMat;
+  }
+  if (!_sharedMuzzleFlashGeo) {
+    const flashParts: THREE.BufferGeometry[] = [
+      // Forward muzzle flame cone
+      transformGeo(rcyl(0.002, 0.052, 0.22, 0xfff3ad, 8), {
+        rot: [Math.PI * 0.5, 0, 0],
+        pos: [0, 0, 0.11],
+      }),
+      // Crossed starburst flare petals
+      transformGeo(rbox(0.21, 0.038, 0.024, 0.006, 0xffaa38, 1), {
+        pos: [0, 0, 0.025],
+      }),
+      transformGeo(rbox(0.038, 0.21, 0.024, 0.006, 0xffb848, 1), {
+        pos: [0, 0, 0.025],
+      }),
+      transformGeo(smoothSphere(0.046, 0xffffff, 10, 8), {
+        pos: [0, 0, 0.02],
+      }),
+    ];
+    _sharedMuzzleFlashGeo = mergeParts(flashParts);
+    _sharedMuzzleFlashGeo.computeBoundingSphere();
+  }
+  return {
+    frameGeo: _sharedPistolFrameGeo,
+    slideGeo: _sharedPistolSlideGeo,
+    mat: _sharedPistolMat,
+    flashGeo: _sharedMuzzleFlashGeo,
+    flashMat: _sharedMuzzleFlashMat,
+  };
+}
 
 function getOrBuildRoyalCrownAssets(): { geo: THREE.BufferGeometry; mat: THREE.NodeMaterial } {
   if (_sharedCrownGeo && _sharedCrownMat) {
@@ -906,11 +1031,19 @@ export class SparrowMesh {
   public readonly leftLegRig: AvianLegRig;
   public readonly rightLegRig: AvianLegRig;
   public readonly crownGroup = new THREE.Group();
+  public readonly gunMount = new THREE.Group();
+  private readonly gunPivot = new THREE.Group();
+  private readonly gunSlideMesh: THREE.Mesh | null = null;
+  private readonly muzzleAnchor = new THREE.Object3D();
+  private readonly muzzleFlashGroup = new THREE.Group();
 
   private readonly palette: SpeciesPalette;
   private readonly bodyMesh: THREE.Mesh;
   private mat: THREE.NodeMaterial;
   private crownEquipped = false;
+  private gunEquipped = false;
+  private gunRecoilTimer = 0;
+  private muzzleFlashTimer = 0;
 
   constructor(species: BirdSpecies) {
     this.palette = resolveSpeciesPalette(species);
@@ -969,6 +1102,30 @@ export class SparrowMesh {
       this.crownGroup.visible = false;
       this.crownGroup.add(crownMesh);
       this.headPivot.add(this.crownGroup);
+
+      // Hidden 3D pistol attached beside the bird's right wing/claw (peaceful mode: visible = false)
+      const pistolAssets = getOrBuildPistolAssets();
+      this.gunMount.position.set(0.185 * pal.bodyScale[0], -0.025 * pal.bodyScale[1], 0.145 * pal.bodyScale[2]);
+      this.gunMount.visible = false;
+      this.bodyPivot.add(this.gunMount);
+
+      this.gunMount.add(this.gunPivot);
+      const frameMesh = new THREE.Mesh(pistolAssets.frameGeo, pistolAssets.mat);
+      frameMesh.castShadow = true;
+      this.gunPivot.add(frameMesh);
+
+      this.gunSlideMesh = new THREE.Mesh(pistolAssets.slideGeo, pistolAssets.mat);
+      this.gunSlideMesh.castShadow = true;
+      this.gunPivot.add(this.gunSlideMesh);
+
+      this.muzzleAnchor.position.set(0, 0.048, 0.215);
+      this.gunPivot.add(this.muzzleAnchor);
+
+      const flashMesh = new THREE.Mesh(pistolAssets.flashGeo, pistolAssets.flashMat);
+      flashMesh.castShadow = false;
+      this.muzzleFlashGroup.visible = false;
+      this.muzzleFlashGroup.add(flashMesh);
+      this.muzzleAnchor.add(this.muzzleFlashGroup);
     }
 
     // 3. Wings
@@ -1030,6 +1187,38 @@ export class SparrowMesh {
 
   public setCrownScale(scale: number): void {
     this.crownGroup.scale.setScalar(scale);
+  }
+
+  public setGunEquipped(equipped: boolean): void {
+    this.gunEquipped = equipped;
+    this.gunMount.visible = equipped;
+    if (!equipped) {
+      this.gunRecoilTimer = 0;
+      this.muzzleFlashTimer = 0;
+      this.muzzleFlashGroup.visible = false;
+      this.gunPivot.position.set(0, 0, 0);
+      this.gunPivot.rotation.set(0, 0, 0);
+      if (this.gunSlideMesh) this.gunSlideMesh.position.z = 0;
+    }
+  }
+
+  public isGunEquipped(): boolean {
+    return this.gunEquipped;
+  }
+
+  public triggerGunRecoil(): void {
+    if (!this.gunEquipped) return;
+    this.gunRecoilTimer = 0.14;
+    this.muzzleFlashTimer = 0.055;
+    this.muzzleFlashGroup.visible = true;
+    this.muzzleFlashGroup.rotation.z = Math.random() * Math.PI * 2;
+    const s = 0.85 + Math.random() * 0.45;
+    this.muzzleFlashGroup.scale.set(s, s, 0.9 + Math.random() * 0.35);
+  }
+
+  public getMuzzleWorldPosition(out: THREE.Vector3): THREE.Vector3 {
+    this.muzzleAnchor.getWorldPosition(out);
+    return out;
   }
 
   private attachWing(
@@ -1503,15 +1692,47 @@ export class SparrowMesh {
       this.bodyMesh.scale.set(1, 1, 1);
     }
 
+    if (this.gunEquipped) {
+      if (this.gunRecoilTimer > 0) {
+        this.gunRecoilTimer = Math.max(0, this.gunRecoilTimer - dt);
+      }
+      if (this.muzzleFlashTimer > 0) {
+        this.muzzleFlashTimer = Math.max(0, this.muzzleFlashTimer - dt);
+        if (this.muzzleFlashTimer <= 0) {
+          this.muzzleFlashGroup.visible = false;
+        }
+      }
+      const recoilU = this.gunRecoilTimer / 0.14;
+      const recoilKick = recoilU * recoilU;
+      const targetAimPitch = p.gunAimPitch ?? 0;
+      this.gunPivot.position.z = -recoilKick * 0.085;
+      this.gunPivot.position.y = recoilKick * 0.022;
+      this.gunPivot.rotation.x = targetAimPitch - recoilKick * 0.48;
+      if (this.gunSlideMesh) {
+        this.gunSlideMesh.position.z = -recoilKick * 0.068;
+      }
+    }
+
+    const tumble = Math.max(0, Math.min(1, p.tumblePhase ?? 0));
+    const tumbleDir = p.tumbleDir ?? 1;
+
     if (p.mode === 'flying') {
-      this.bodyPivot.rotation.z += (p.bankAngle * 0.68 - this.bodyPivot.rotation.z) * Math.min(1, dt * 10);
+      const targetBank = p.bankAngle * 0.68;
+      if (tumble > 0.001) {
+        const spinRoll = tumbleDir * Math.sin(tumble * Math.PI * 0.5) * Math.PI * 2.0;
+        this.bodyPivot.rotation.z = targetBank + spinRoll;
+      } else {
+        this.bodyPivot.rotation.z += (targetBank - this.bodyPivot.rotation.z) * Math.min(1, dt * 10);
+      }
       const targetPitch =
-        bonk > 0.1
-          ? -0.38 * bonk
-          : p.isBraking
-            ? -0.46
-            : p.pitchAngle * 0.78 + descent * 0.16 + peckStrike * 0.26;
-      this.bodyPivot.rotation.x += (targetPitch - this.bodyPivot.rotation.x) * Math.min(1, dt * 11);
+        tumble > 0.05
+          ? Math.sin(tumble * Math.PI) * 0.85
+          : bonk > 0.1
+            ? -0.38 * bonk
+            : p.isBraking
+              ? -0.46
+              : p.pitchAngle * 0.78 + descent * 0.16 + peckStrike * 0.26;
+      this.bodyPivot.rotation.x += (targetPitch - this.bodyPivot.rotation.x) * Math.min(1, dt * 12);
       this.bodyPivot.position.y = 0;
       this.bodyPivot.position.z = peckStrike * 0.085;
 

@@ -116,6 +116,7 @@ export class AcousticSoundtrack {
   private flapBuf: AudioBuffer | null = null;
   private ruffleBuf: AudioBuffer | null = null;
   private shakeBuf: AudioBuffer | null = null;
+  private gunshotBuf: AudioBuffer | null = null;
   private crumbBiteBufs: AudioBuffer[] = [];
   private preloaded = false;
 
@@ -589,6 +590,14 @@ export class AcousticSoundtrack {
     const shakeData = this.shakeBuf.getChannelData(0);
     for (let s = 0; s < shakeLen; s++) {
       shakeData[s] = (Math.random() * 2 - 1) * Math.sin((s / shakeLen) * Math.PI);
+    }
+
+    const gunLen = Math.max(128, Math.floor(rate * 0.18));
+    this.gunshotBuf = ctx.createBuffer(1, gunLen, rate);
+    const gunData = this.gunshotBuf.getChannelData(0);
+    for (let i = 0; i < gunLen; i++) {
+      const env = Math.exp((-i / gunLen) * 5.2);
+      gunData[i] = (Math.random() * 2 - 1) * env;
     }
 
     // Rosenberg natural glottal-pulse PeriodicWave (~-12 dB/oct smooth vocal-fold harmonics, zero sawtooth buzz)
@@ -5118,6 +5127,164 @@ export class AcousticSoundtrack {
       osc.start(now);
       osc.stop(now + p.dur + 0.05);
     });
+  }
+
+  public playGunToggle(equipped: boolean): void {
+    this.unlock();
+    if (!this.ctx || !this.sfxGain) return;
+    const now = this.ctx.currentTime;
+    const clicks = equipped ? [980, 1520] : [1380, 820];
+    clicks.forEach((f, idx) => {
+      const t0 = now + idx * 0.032;
+      const osc = this.ctx!.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(f, t0);
+      osc.frequency.exponentialRampToValueAtTime(f * (equipped ? 1.25 : 0.72), t0 + 0.022);
+      const g = this.ctx!.createGain();
+      g.gain.setValueAtTime(0.085, t0);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.028);
+      osc.connect(g);
+      g.connect(this.sfxGain!);
+      this.disconnectOnEnded(osc, osc, g);
+      osc.start(t0);
+      osc.stop(t0 + 0.032);
+    });
+  }
+
+  public playGunshot(worldPos?: Vec3Like): void {
+    this.unlock();
+    if (!this.ctx || !this.sfxGain) return;
+    this.addChaosImpulse(0.45);
+    const now = this.ctx.currentTime;
+    const sp = this.createSpatialOneShotOut(worldPos, 28, 1.0, false);
+    const jitter = 0.94 + Math.random() * 0.12;
+
+    // 1. High-energy propellant crack (filtered white-noise burst)
+    const noiseBuf = this.gunshotBuf ?? this.shakeBuf ?? this.ruffleBuf;
+    if (noiseBuf) {
+      const crack = this.ctx.createBufferSource();
+      crack.buffer = noiseBuf;
+      crack.playbackRate.value = jitter;
+
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(2450 * jitter, now);
+      bp.frequency.exponentialRampToValueAtTime(360, now + 0.13);
+      bp.Q.value = 0.85;
+
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime(0.32, now);
+      ng.gain.exponentialRampToValueAtTime(0.0008, now + 0.155);
+
+      crack.connect(bp);
+      bp.connect(ng);
+      ng.connect(sp.dest);
+      this.disconnectOnEnded(crack, crack, bp, ng);
+      crack.start(now);
+    }
+
+    // 2. Concussive punch transient (fast downward frequency sweep)
+    const punch = this.ctx.createOscillator();
+    punch.type = 'triangle';
+    punch.frequency.setValueAtTime(340 * jitter, now);
+    punch.frequency.exponentialRampToValueAtTime(48 * jitter, now + 0.075);
+
+    const pg = this.ctx.createGain();
+    pg.gain.setValueAtTime(0.28, now);
+    pg.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+
+    punch.connect(pg);
+    pg.connect(sp.dest);
+    this.disconnectOnEnded(punch, punch, pg);
+    punch.start(now);
+    punch.stop(now + 0.1);
+
+    // 3. Sharp mechanical slide snap
+    const snap = this.ctx.createOscillator();
+    snap.type = 'square';
+    snap.frequency.setValueAtTime(1680 * jitter, now);
+    snap.frequency.exponentialRampToValueAtTime(720 * jitter, now + 0.022);
+
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 3400;
+
+    const sg = this.ctx.createGain();
+    sg.gain.setValueAtTime(0.075, now);
+    sg.gain.exponentialRampToValueAtTime(0.0001, now + 0.026);
+
+    snap.connect(lp);
+    lp.connect(sg);
+    sg.connect(sp.dest);
+    this.disconnectOnEnded(snap, snap, lp, sg, ...sp.cleanup);
+    snap.start(now);
+    snap.stop(now + 0.032);
+  }
+
+  public playBirdHurt(): void {
+    this.unlock();
+    if (!this.ctx || !this.sfxGain) return;
+    const now = this.ctx.currentTime;
+    const jitter = 0.94 + Math.random() * 0.12;
+
+    // 1. Pained high-pitched sparrow distress chirp
+    const chirp = this.ctx.createOscillator();
+    chirp.type = 'triangle';
+    chirp.frequency.setValueAtTime(2450 * jitter, now);
+    chirp.frequency.exponentialRampToValueAtTime(1180 * jitter, now + 0.11);
+
+    const cg = this.ctx.createGain();
+    cg.gain.setValueAtTime(0.18, now);
+    cg.gain.exponentialRampToValueAtTime(0.0001, now + 0.125);
+    chirp.connect(cg);
+    cg.connect(this.sfxGain);
+    this.disconnectOnEnded(chirp, chirp, cg);
+    chirp.start(now);
+    chirp.stop(now + 0.135);
+
+    // 2. Crisp impact thump
+    const thump = this.ctx.createOscillator();
+    thump.type = 'sine';
+    thump.frequency.setValueAtTime(195 * jitter, now);
+    thump.frequency.exponentialRampToValueAtTime(58, now + 0.085);
+
+    const tg = this.ctx.createGain();
+    tg.gain.setValueAtTime(0.22, now);
+    tg.gain.exponentialRampToValueAtTime(0.0001, now + 0.095);
+    thump.connect(tg);
+    tg.connect(this.sfxGain);
+    this.disconnectOnEnded(thump, thump, tg);
+    thump.start(now);
+    thump.stop(now + 0.105);
+  }
+
+  public playRebellionAlert(major: boolean): void {
+    this.unlock();
+    if (!this.ctx || !this.sfxGain) return;
+    const now = this.ctx.currentTime;
+    const notes = major ? [392.0, 466.16, 587.33, 783.99] : [349.23, 440.0];
+    for (let i = 0; i < notes.length; i++) {
+      const t0 = now + i * 0.095;
+      const osc = this.ctx.createOscillator();
+      osc.type = major ? 'sawtooth' : 'triangle';
+      osc.frequency.setValueAtTime(notes[i], t0);
+
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = major ? 2100 : 1600;
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.linearRampToValueAtTime(major ? 0.12 : 0.09, t0 + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.24);
+
+      osc.connect(lp);
+      lp.connect(g);
+      g.connect(this.sfxGain);
+      this.disconnectOnEnded(osc, osc, lp, g);
+      osc.start(t0);
+      osc.stop(t0 + 0.26);
+    }
   }
 
   public dispose(): void {

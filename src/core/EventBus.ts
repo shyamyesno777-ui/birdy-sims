@@ -6,6 +6,8 @@ export type WeatherType = 'clear' | 'breezy' | 'rain' | 'mist';
 
 export type TimePhase = 'dawn' | 'day' | 'sunset' | 'night';
 
+export type RebellionMode = 'peaceful' | 'skirmish' | 'major';
+
 export type GameEventMap = {
   'deed:completed': { id: SparrowDeedId; completedCount: number; totalCount: number };
   'district:awakened': { index: number; companionId: string };
@@ -19,6 +21,16 @@ export type GameEventMap = {
   'pigeons:scattered': void;
   'environment:timeChanged': { timeOfDay: number; phase: TimePhase; nightFactor: number };
   'environment:weatherChanged': { weather: WeatherType; previous: WeatherType };
+  'gun:toggled': { equipped: boolean };
+  'gun:fired': { pos: THREE.Vector3; dir: THREE.Vector3 };
+  'crowd:kill': { kills: number; mode: RebellionMode; hostileChance: number };
+  'bird:healthChanged': { hp: number; maxHp: number; delta: number; downed: boolean };
+  'rebellion:changed': {
+    mode: RebellionMode;
+    prevMode: RebellionMode;
+    kills: number;
+    hostileChance: number;
+  };
   'session:disposed': void;
 };
 

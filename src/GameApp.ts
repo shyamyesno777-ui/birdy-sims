@@ -25,6 +25,8 @@ import {
 import type { LoadingScreen } from './ui/LoadingScreen.ts';
 import { EventBus, type GameEventMap } from './core/EventBus.ts';
 import { EnvironmentController } from './environment/EnvironmentController.ts';
+import { CrowdRebellionManager } from './entities/CrowdRebellionManager.ts';
+import { CombatStatusHUD } from './ui/CombatStatusHUD.ts';
 
 export interface SparrowGameSession {
   events: EventBus<GameEventMap>;
@@ -85,6 +87,7 @@ export async function startGameApp(
   container.replaceChildren(renderer.domElement);
   const tutorialOverlay = new TutorialOverlay(container);
   const journalHud = new SparrowJournalHUD(container);
+  const combatHud = new CombatStatusHUD(container);
   const mobileControls = new MobileTouchControls(container);
   isMobile = mobileControls.isMobile();
   document.body.classList.toggle('is-mobile', isMobile);
@@ -187,6 +190,17 @@ export async function startGameApp(
   const physics = new PhysicsWorld();
   const perches = new PerchSystem();
   const npcs = new NPCManager(scene, perches, physics, audio, fx);
+  const crowdManager = new CrowdRebellionManager(scene, physics, audio, fx, events);
+
+  events.on('crowd:kill', ({ kills, mode }) => {
+    combatHud.setKillsAndMode(kills, mode);
+  });
+  events.on('bird:healthChanged', ({ hp, maxHp, delta, downed }) => {
+    combatHud.setHealth(hp, maxHp, delta < 0, downed);
+  });
+  events.on('rebellion:changed', ({ mode }) => {
+    combatHud.showEscalationAlert(mode);
+  });
 
   // Build the 4-block neighborhood & conservatory atelier, reporting loading progress
   const cityBuilder = new CityBlockBuilder(scene, physics, perches, fx, npcs, audio);
@@ -221,7 +235,34 @@ export async function startGameApp(
   );
   sparrow.cageBounds = worldHandles.cageBounds;
   sparrow.windowBarrier = worldHandles.windowBarrier;
-  sparrow.npcs = npcs;
+  // Compose Phase 1 story NPCs with Phase 2 object-pooled crowd NPCs without touching SparrowController gun/flight code
+  sparrow.npcs = {
+    handlePlayerPeck: (beakPos, birdPos) => npcs.handlePlayerPeck(beakPos, birdPos),
+    sampleShooGust: (playerPos) => npcs.sampleShooGust(playerPos),
+    notifyTablePeck: (beakPos) => npcs.notifyTablePeck(beakPos),
+    isHumanCollider: (body) => npcs.isHumanCollider(body),
+    notifyAcousticShock: (origin, kind) => npcs.notifyAcousticShock(origin, kind),
+    checkFallingDroppingHit: (prevPos, nextPos, birdPos) =>
+      npcs.checkFallingDroppingHit(prevPos, nextPos, birdPos),
+    checkBulletHit: (prevPos, nextPos, birdPos) => {
+      const crowdCand = crowdManager.findBulletHit(prevPos, nextPos);
+      const storyEnd = crowdCand ? crowdCand.point : nextPos;
+      const storyHit = npcs.checkBulletHit(prevPos, storyEnd, birdPos);
+      if (storyHit?.hit) {
+        return storyHit;
+      }
+      if (crowdCand) {
+        crowdManager.applyBulletHit(crowdCand, prevPos, nextPos, birdPos);
+        return {
+          hit: true,
+          kind: 'human' as const,
+          distance: crowdCand.distance,
+          point: crowdCand.point,
+        };
+      }
+      return null;
+    },
+  };
   sparrow.worldHandles = worldHandles;
   sparrow.attachMobileControls(mobileControls);
   sparrow.inputEnabled = false;
@@ -264,6 +305,20 @@ export async function startGameApp(
 
   birdCam.setIntroWaitingPose(sparrow.position, sparrow.yaw);
   sparrow.setIntroLookTarget(birdCam.camera.position);
+
+  sparrow.getAimRay = (outOrigin, outDir) => {
+    birdCam.camera.getWorldPosition(outOrigin);
+    birdCam.camera.getWorldDirection(outDir);
+  };
+  sparrow.onGunToggleCallback = (equipped) => {
+    journalHud.setGunEquipped(equipped);
+    events.emit('gun:toggled', { equipped });
+  };
+  sparrow.onGunFiredCallback = (pos, dir) => {
+    journalHud.triggerCrosshairRecoil();
+    crowdManager.onPlayerShot(pos, sparrow.position);
+    events.emit('gun:fired', { pos, dir });
+  };
 
   sparrow.onChirpCallback = (chirpPos) => {
     npcs.handlePlayerChirp(chirpPos);
@@ -382,6 +437,7 @@ export async function startGameApp(
     director.dispose();
     sparrow.dispose();
     birdCam.dispose();
+    crowdManager.dispose();
     npcs.dispose();
     cityBuilder.dispose();
     fx.dispose();
@@ -390,6 +446,7 @@ export async function startGameApp(
     audio.dispose();
     tutorialOverlay.dispose();
     journalHud.dispose();
+    combatHud.dispose();
     mobileControls.dispose();
     renderer.dispose();
   };
@@ -407,11 +464,13 @@ export async function startGameApp(
       director,
       tutorialOverlay,
       journalHud,
+      combatHud,
       mobileControls,
       loadingScreen,
       physics,
       perches,
       npcs,
+      crowdManager,
       fx,
       audio,
       events,
@@ -451,6 +510,7 @@ export async function startGameApp(
   void loadingScreen.waitForStart().then(() => {
     if (disposed) return;
     wakeAudio();
+    combatHud.setVisible(true);
     sparrow.clearQueuedInputs();
     birdCam.beginIntroSequence(
       () => {
@@ -565,6 +625,13 @@ export async function startGameApp(
         sparrow.carriedProp?.kind ?? null,
         worldHandles.getTramX(),
         worldHandles.getCanalBoats()
+      );
+      crowdManager.update(
+        dt,
+        elapsed,
+        sparrow.position,
+        birdCam.camera,
+        worldHandles.getTramX()
       );
       perches.refreshDynamicGrid();
       director.update(dt);
