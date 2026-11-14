@@ -518,26 +518,26 @@ export class WorldFX {
     const specsB: Array< Omit<DriftingCloud, 'inst' | 'instanceIdx'> > = [];
     const specsC: Array< Omit<DriftingCloud, 'inst' | 'instanceIdx'> > = [];
 
-    // Ring 1: 18 Sculpted Outer-Horizon Cumulus Clouds (`r = 350..464 SU`, `y = 152..192 SU`)
+    // Ring 1: 18 Sculpted Outer-Horizon Cumulus Clouds (`r = 490..604 SU`, `y = 168..208 SU`) outside expanded skyline
     for (let i = 0; i < 18; i++) {
       const bucket = i % 3 === 0 ? specsC : i % 2 === 0 ? specsB : specsA;
       bucket.push({
-        orbitRadius: 350 + (i % 4) * 38,
+        orbitRadius: 490 + (i % 4) * 38,
         orbitAngle: (i / 18) * Math.PI * 2 + (i % 3) * 0.14,
         angularSpeed: 0.0042 + (i % 3) * 0.0014,
-        baseY: 152 + (i % 5) * 10,
+        baseY: 168 + (i % 5) * 10,
         phase: i * 0.8,
       });
     }
 
-    // Ring 2: 10 High-Zenith Sky Clouds (`y = 206..254 SU`, `r = 105..261 SU`) above all spires.
+    // Ring 2: 10 High-Zenith Sky Clouds (`y = 214..262 SU`, `r = 125..281 SU`) above all spires.
     for (let j = 0; j < 10; j++) {
       const bucket = j % 2 === 0 ? specsA : specsB;
       bucket.push({
-        orbitRadius: 105 + (j % 4) * 52,
+        orbitRadius: 125 + (j % 4) * 52,
         orbitAngle: (j / 10) * Math.PI * 2 + 0.37,
         angularSpeed: 0.0058 + (j % 3) * 0.0018,
-        baseY: 206 + (j % 4) * 16,
+        baseY: 214 + (j % 4) * 16,
         phase: 2.4 + j * 0.9,
       });
     }

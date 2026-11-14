@@ -15,15 +15,15 @@ export interface BoxVolumeBounds {
  * flight boundary backstops, indoor conservatory clamping, and shader/camera limits.
  */
 export const WORLD_CONFIG = {
-  /** Half-extent (SU) of the playable city block footprint (~336 x 336 SU total). */
-  worldHalfExtent: 168.0,
+  /** Half-extent (SU) of the expanded playable city footprint (~672 x 672 SU total). */
+  worldHalfExtent: 336.0,
   /** Soft breeze pushback onset before the hard perimeter backstop. */
-  perimeterSoftMargin: 158.0,
+  perimeterSoftMargin: 320.0,
   /** Lower fail-safe Y threshold for recovering dropped/tunneling physics props. */
   propFailSafeMinY: -15.0,
-  /** Sky dome sphere radius & recommended far clip distance. */
-  skyRadius: 740.0,
-  cameraFar: 880.0,
+  /** Sky dome sphere radius & recommended far clip distance for expanded skyline. */
+  skyRadius: 1180.0,
+  cameraFar: 1380.0,
   /** Default 2D spatial grid cell size (SU) for perches and interactive props. */
   spatialGridCellSize: 16.0,
 

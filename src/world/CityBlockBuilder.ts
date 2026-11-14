@@ -712,12 +712,18 @@ export class CityBlockBuilder {
     // Sunken Canal Bed (`y = -2.2`)
     this.physics.addStaticBox(new THREE.Vector3(-78.0, -3.2, -54.0), new THREE.Vector3(62.0, 1.0, 14.0));
 
-    // Lush rolling green countryside meadow skirt outside the stone city perimeter (`±186 SU`) -> merged into `horizonHillsMesh`
+    // Outer ground physics slabs extending cleanly beyond core `[-174..+174]` out to `±346` (zero overlap)
+    this.physics.addStaticBox(new THREE.Vector3(0, -2.0, 259.0), new THREE.Vector3(346.0, 2.0, 87.0));
+    this.physics.addStaticBox(new THREE.Vector3(0, -2.0, -259.0), new THREE.Vector3(346.0, 2.0, 87.0));
+    this.physics.addStaticBox(new THREE.Vector3(-260.0, -2.0, 0), new THREE.Vector3(86.0, 2.0, 172.0));
+    this.physics.addStaticBox(new THREE.Vector3(260.0, -2.0, 0), new THREE.Vector3(86.0, 2.0, 172.0));
+
+    // Lush rolling green countryside meadow skirt outside the expanded stone city perimeter (`±356 SU`) -> merged into `horizonHillsMesh`
     this.horizonParts.push(
-      transformGeo(rbox(920, 0.5, 920, 0.08, PALETTE.grassMeadow, 1), {
+      transformGeo(rbox(1640, 0.5, 1640, 0.08, PALETTE.grassMeadow, 1), {
         pos: [0, -2.85, 0],
       }),
-      transformGeo(rbox(376, 0.45, 376, 0.12, PALETTE.plazaSand, 1), {
+      transformGeo(rbox(712, 0.45, 712, 0.12, PALETTE.plazaSand, 1), {
         pos: [0, -2.3, 0],
       })
     );
@@ -729,27 +735,131 @@ export class CityBlockBuilder {
       se: [],
     };
 
-    // Asphalt Boulevards (`32 SU` wide, top `y = 0.03`) split into the 4 quadrants without coplanar overlap
+    // Main Asphalt Boulevards (`32 SU` wide, top `y = 0.03`) extended across full doubled city (`±320 SU`)
     quadGround.sw.push(
-      transformGeo(rbox(220, 0.5, 32, 0.08, PALETTE.asphaltLavender, 1), {
-        pos: [-110, -0.22, 0],
+      transformGeo(rbox(320, 0.5, 32, 0.08, PALETTE.asphaltLavender, 1), {
+        pos: [-160, -0.22, 0],
       })
     );
     quadGround.ne.push(
-      transformGeo(rbox(220, 0.5, 32, 0.08, PALETTE.asphaltLavender, 1), {
-        pos: [110, -0.22, 0],
+      transformGeo(rbox(320, 0.5, 32, 0.08, PALETTE.asphaltLavender, 1), {
+        pos: [160, -0.22, 0],
       })
     );
     quadGround.nw.push(
-      transformGeo(rbox(32, 0.5, 204, 0.08, PALETTE.asphaltLavender, 1), {
-        pos: [0, -0.22, 118],
+      transformGeo(rbox(32, 0.5, 304, 0.08, PALETTE.asphaltLavender, 1), {
+        pos: [0, -0.22, 168],
       })
     );
     quadGround.se.push(
-      transformGeo(rbox(32, 0.5, 204, 0.08, PALETTE.asphaltLavender, 1), {
-        pos: [0, -0.22, -118],
+      transformGeo(rbox(32, 0.5, 304, 0.08, PALETTE.asphaltLavender, 1), {
+        pos: [0, -0.22, -168],
       })
     );
+
+    // Outer Ring Streets (`24 SU` wide, `x = ±228`, `z = ±224`, top `y = 0.03`) creating outer intersections
+    for (const sx of [-1, 1] as const) {
+      const qN: QuadrantKey = sx < 0 ? 'nw' : 'ne';
+      const qS: QuadrantKey = sx < 0 ? 'sw' : 'se';
+      quadGround[qN].push(
+        transformGeo(rbox(24, 0.5, 302, 0.08, PALETTE.asphaltLavender, 1), {
+          pos: [sx * 228, -0.22, 167],
+        })
+      );
+      quadGround[qS].push(
+        transformGeo(rbox(24, 0.5, 302, 0.08, PALETTE.asphaltLavender, 1), {
+          pos: [sx * 228, -0.22, -167],
+        })
+      );
+    }
+    for (const sz of [-1, 1] as const) {
+      for (const sx of [-1, 1] as const) {
+        const qKey: QuadrantKey =
+          sx < 0 ? (sz > 0 ? 'nw' : 'sw') : sz > 0 ? 'ne' : 'se';
+        // Inner horizontal street wing (`|x| in [16..216]`)
+        quadGround[qKey].push(
+          transformGeo(rbox(200, 0.5, 24, 0.08, PALETTE.asphaltLavender, 1), {
+            pos: [sx * 116, -0.22, sz * 224],
+          }),
+          // Outer horizontal street wing (`|x| in [240..318]`)
+          transformGeo(rbox(78, 0.5, 24, 0.08, PALETTE.asphaltLavender, 1), {
+            pos: [sx * 279, -0.22, sz * 224],
+          })
+        );
+      }
+    }
+
+    // Outer District Plazas, Promenades & Park Lawns (`±154..±316 SU`, flush `top = 0.28`, zero overlap)
+    for (const [sx, sz] of [
+      [-1, 1],
+      [1, 1],
+      [-1, -1],
+      [1, -1],
+    ] as const) {
+      const qKey: QuadrantKey =
+        sx < 0 ? (sz > 0 ? 'nw' : 'sw') : sz > 0 ? 'ne' : 'se';
+      const stoneHex =
+        qKey === 'nw'
+          ? PALETTE.plazaCream
+          : qKey === 'ne'
+            ? PALETTE.plazaSand
+            : qKey === 'sw'
+              ? PALETTE.plazaRoseStone
+              : PALETTE.plazaWarmStone;
+
+      const addOuterPlaza = (cx: number, cz: number, w: number, d: number): void => {
+        quadGround[qKey].push(
+          transformGeo(rbox(w, 0.56, d, 0.22, stoneHex, 1), { pos: [cx, 0.0, cz] })
+        );
+        this.physics.addStaticBox(
+          new THREE.Vector3(cx, 0.14, cz),
+          new THREE.Vector3(w * 0.5, 0.14, d * 0.5)
+        );
+      };
+
+      // Mid-outer ring flanking old perimeter (`154..216` x `16..212` and `16..154` x `154..212`)
+      if (qKey === 'sw') {
+        addOuterPlaza(-185, -26, 62, 20);
+        addOuterPlaza(-191, -54, 50, 36);
+        addOuterPlaza(-185, -142, 62, 140);
+        addOuterPlaza(-85, -183, 138, 58);
+      } else {
+        addOuterPlaza(sx * 185, sz * 114, 62, 196);
+        addOuterPlaza(sx * 85, sz * 183, 138, 58);
+      }
+
+      // Outer West/East blocks (`|x| in [240..316]`, `|z| in [16..212]`)
+      addOuterPlaza(sx * 278, sz * 114, 76, 196);
+      // Outer North/South blocks (`|x| in [16..216]`, `|z| in [236..316]`)
+      addOuterPlaza(sx * 116, sz * 276, 200, 80);
+      // Outer Corner Park Plazas (`|x| in [240..316]`, `|z| in [236..316]`)
+      addOuterPlaza(sx * 278, sz * 276, 76, 80);
+
+      // Decorative grass lawn inlays inside outer blocks (`top = 0.35`, zero overlap)
+      quadGround[qKey].push(
+        transformGeo(rbox(56, 0.14, 58, 0.1, PALETTE.grassMeadow, 1), {
+          pos: [sx * 278, 0.28, sz * 276],
+        }),
+        transformGeo(rbox(44, 0.14, 64, 0.1, PALETTE.grassMeadow, 1), {
+          pos: [sx * 185, 0.28, sz * 124],
+        }),
+        transformGeo(rbox(68, 0.14, 48, 0.1, PALETTE.grassMeadow, 1), {
+          pos: [sx * 64, 0.28, sz * 276],
+        })
+      );
+      this.physics.addStaticBox(
+        new THREE.Vector3(sx * 278, 0.28, sz * 276),
+        new THREE.Vector3(28, 0.07, 29)
+      );
+      this.physics.addStaticBox(
+        new THREE.Vector3(sx * 185, 0.28, sz * 124),
+        new THREE.Vector3(22, 0.07, 32)
+      );
+      this.physics.addStaticBox(
+        new THREE.Vector3(sx * 64, 0.28, sz * 276),
+        new THREE.Vector3(34, 0.07, 24)
+      );
+    }
 
     // NW Café & Boulangerie Sidewalk Plaza (`x: -154..-16, z: 16..154`, top `y = 0.28`) + Raised Rose Stone Terrace (`top = 0.35`)
     quadGround.nw.push(
@@ -879,9 +989,10 @@ export class CityBlockBuilder {
       );
     }
 
-    // Oak Sleepers (`y: 0.04..0.11`) & Raised Steel Tram Rails (`y: 0.12..0.21`) along `z = 0`, split West (`sw`) vs East (`ne`)
-    for (let tx = -182; tx <= 182; tx += 4.2) {
+    // Oak Sleepers (`y: 0.04..0.11`) & Raised Steel Tram Rails (`y: 0.12..0.21`) along `z = 0`, extended across `±318 SU`
+    for (let tx = -316; tx <= 316; tx += 4.2) {
       if (Math.abs(tx - 23) < 3.4 || Math.abs(tx + 23) < 3.4) continue;
+      if (Math.abs(tx - 228) < 12.5 || Math.abs(tx + 228) < 12.5) continue;
       const target = tx < 0 ? quadGround.sw : quadGround.ne;
       target.push(
         transformGeo(rbox(0.85, 0.07, 5.6, 0.03, PALETTE.woodWalnut, 1), {
@@ -890,12 +1001,12 @@ export class CityBlockBuilder {
       );
     }
     quadGround.sw.push(
-      transformGeo(rbox(190, 0.09, 0.26, 0.03, PALETTE.ironworkPlum, 1), { pos: [-95, 0.165, -2.1] }),
-      transformGeo(rbox(190, 0.09, 0.26, 0.03, PALETTE.ironworkPlum, 1), { pos: [-95, 0.165, 2.1] })
+      transformGeo(rbox(318, 0.09, 0.26, 0.03, PALETTE.ironworkPlum, 1), { pos: [-159, 0.165, -2.1] }),
+      transformGeo(rbox(318, 0.09, 0.26, 0.03, PALETTE.ironworkPlum, 1), { pos: [-159, 0.165, 2.1] })
     );
     quadGround.ne.push(
-      transformGeo(rbox(190, 0.09, 0.26, 0.03, PALETTE.ironworkPlum, 1), { pos: [95, 0.165, -2.1] }),
-      transformGeo(rbox(190, 0.09, 0.26, 0.03, PALETTE.ironworkPlum, 1), { pos: [95, 0.165, 2.1] })
+      transformGeo(rbox(318, 0.09, 0.26, 0.03, PALETTE.ironworkPlum, 1), { pos: [159, 0.165, -2.1] }),
+      transformGeo(rbox(318, 0.09, 0.26, 0.03, PALETTE.ironworkPlum, 1), { pos: [159, 0.165, 2.1] })
     );
 
     for (const qKey of ['nw', 'ne', 'sw', 'se'] as const) {
@@ -6312,50 +6423,83 @@ export class CityBlockBuilder {
   private async buildPerimeterTownhouseSkylineAndStreetFurniture(
     onProgress?: (percent: number) => Promise<void>
   ): Promise<void> {
-    // Continuous 5–6 Story Physical Perimeter Townhouses, Corner Cupola Palazzos & Boulevard Galleria/Depot Gatehouses
-    // Every facade meets edge-to-edge along `±152 SU` with colliders extending to `y = 172` (replacing artificial invisible walls).
+    // Expanded 5–6 Story Physical Perimeter Townhouses & Corner Cupola Palazzos along `±316 SU`
+    // Plus 16 climbable/perchable outer-district residential townhouses framing the outer boulevards.
     const perimeterHouses: Array<Omit<TownhouseSpec, 'id'>> = [
-      // 4 Grand 6-Story Corner Haussmann Palazzos (`±166, ±166`, `32 x 32` -> `±150..±182`)
-      { center: [-166, 166], widthX: 32, depthZ: 32, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true, east: true } },
-      { center: [166, 166], widthX: 32, depthZ: 32, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true, west: true } },
-      { center: [-166, -166], widthX: 32, depthZ: 32, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'north', visibleFaces: { north: true, east: true } },
-      { center: [166, -166], widthX: 32, depthZ: 32, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true, west: true } },
+      // 4 Grand 6-Story Corner Haussmann Palazzos (`±330, ±330`, `32 x 32` -> `±314..±346`)
+      { center: [-330, 330], widthX: 32, depthZ: 32, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true, east: true } },
+      { center: [330, 330], widthX: 32, depthZ: 32, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true, west: true } },
+      { center: [-330, -330], widthX: 32, depthZ: 32, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'north', visibleFaces: { north: true, east: true } },
+      { center: [330, -330], widthX: 32, depthZ: 32, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true, west: true } },
 
-      // North Rim (`z = 166`, inner facade `z = 152`, continuous `x: -150..+150`)
-      { center: [-129, 166], widthX: 42, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
-      { center: [-86, 166], widthX: 44, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'south', visibleFaces: { south: true } },
-      { center: [-43, 166], widthX: 42, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
-      { center: [0, 166], widthX: 44, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
-      { center: [43, 166], widthX: 42, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
-      { center: [86, 166], widthX: 44, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallSage, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
-      { center: [129, 166], widthX: 42, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
+      // Expanded North Rim (`z = 330`, inner facade `z = 316`, continuous `x: -314..+314`)
+      { center: [-283, 330], widthX: 64, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
+      { center: [-220, 330], widthX: 64, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'south', visibleFaces: { south: true } },
+      { center: [-157, 330], widthX: 64, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
+      { center: [-94, 330], widthX: 64, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
+      { center: [-31, 330], widthX: 64, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
+      { center: [31, 330], widthX: 64, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallSage, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
+      { center: [94, 330], widthX: 64, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
+      { center: [157, 330], widthX: 64, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterCobalt, roofStyle: 'terracotta', frontFace: 'south', visibleFaces: { south: true } },
+      { center: [220, 330], widthX: 64, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
+      { center: [283, 330], widthX: 64, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'south', visibleFaces: { south: true } },
 
-      // South Rim (`z = -166`, inner facade `z = -152`, continuous `x: -150..+150`)
-      { center: [-129, -166], widthX: 42, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLavender, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
-      { center: [-86, -166], widthX: 44, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallOchre, shutterHex: PALETTE.shutterOlive, roofStyle: 'terracotta', frontFace: 'north', visibleFaces: { north: true } },
-      { center: [-43, -166], widthX: 42, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
-      { center: [0, -166], widthX: 44, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
-      { center: [43, -166], widthX: 42, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallSage, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
-      { center: [86, -166], widthX: 44, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.wallCreamTrim, roofStyle: 'terracotta', frontFace: 'north', visibleFaces: { north: true } },
-      { center: [129, -166], widthX: 42, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
+      // Expanded South Rim (`z = -330`, inner facade `z = -316`, continuous `x: -314..+314`)
+      { center: [-283, -330], widthX: 64, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLavender, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
+      { center: [-220, -330], widthX: 64, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallOchre, shutterHex: PALETTE.shutterOlive, roofStyle: 'terracotta', frontFace: 'north', visibleFaces: { north: true } },
+      { center: [-157, -330], widthX: 64, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
+      { center: [-94, -330], widthX: 64, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.wallCreamTrim, roofStyle: 'terracotta', frontFace: 'north', visibleFaces: { north: true } },
+      { center: [-31, -330], widthX: 64, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
+      { center: [31, -330], widthX: 64, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallSage, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
+      { center: [94, -330], widthX: 64, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
+      { center: [157, -330], widthX: 64, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
+      { center: [220, -330], widthX: 64, depthZ: 28, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterOlive, roofStyle: 'terracotta', frontFace: 'north', visibleFaces: { north: true } },
+      { center: [283, -330], widthX: 64, depthZ: 28, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true } },
 
-      // West Rim (`x = -166`, inner facade `x = -152`, continuous `z: -150..+150` together with Canal Watergate Palazzo)
-      { center: [-166, 129], widthX: 28, depthZ: 42, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
-      { center: [-166, 86], widthX: 28, depthZ: 44, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
-      { center: [-166, 43], widthX: 28, depthZ: 42, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
-      { center: [-166, 0], widthX: 28, depthZ: 44, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
-      { center: [-166, -29], widthX: 28, depthZ: 14, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallOchre, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'east', visibleFaces: { east: true } },
-      { center: [-166, -91.5], widthX: 28, depthZ: 39, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'terracotta', frontFace: 'east', visibleFaces: { east: true } },
-      { center: [-166, -130.5], widthX: 28, depthZ: 39, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallMint, shutterHex: PALETTE.shutterCobalt, roofStyle: 'terracotta', frontFace: 'east', visibleFaces: { east: true } },
+      // Expanded West Rim (`x = -330`, inner facade `x = -316`, continuous `z: -314..+314`)
+      { center: [-330, 283], widthX: 28, depthZ: 64, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
+      { center: [-330, 220], widthX: 28, depthZ: 64, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
+      { center: [-330, 157], widthX: 28, depthZ: 64, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
+      { center: [-330, 94], widthX: 28, depthZ: 64, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
+      { center: [-330, 31], widthX: 28, depthZ: 64, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallOchre, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'east', visibleFaces: { east: true } },
+      { center: [-330, -31], widthX: 28, depthZ: 64, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
+      { center: [-330, -94], widthX: 28, depthZ: 64, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallMint, shutterHex: PALETTE.shutterCobalt, roofStyle: 'terracotta', frontFace: 'east', visibleFaces: { east: true } },
+      { center: [-330, -157], widthX: 28, depthZ: 64, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
+      { center: [-330, -220], widthX: 28, depthZ: 64, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'east', visibleFaces: { east: true } },
+      { center: [-330, -283], widthX: 28, depthZ: 64, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { east: true } },
 
-      // East Rim (`x = 166`, inner facade `x = 152`, continuous `z: -150..+150`)
-      { center: [166, 129], widthX: 28, depthZ: 42, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
-      { center: [166, 86], widthX: 28, depthZ: 44, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
-      { center: [166, 43], widthX: 28, depthZ: 42, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
-      { center: [166, 0], widthX: 28, depthZ: 44, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
-      { center: [166, -43], widthX: 28, depthZ: 42, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
-      { center: [166, -86], widthX: 28, depthZ: 44, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'west', visibleFaces: { west: true } },
-      { center: [166, -129], widthX: 28, depthZ: 42, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallSage, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
+      // Expanded East Rim (`x = 330`, inner facade `x = 316`, continuous `z: -314..+314`)
+      { center: [330, 283], widthX: 28, depthZ: 64, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
+      { center: [330, 220], widthX: 28, depthZ: 64, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
+      { center: [330, 157], widthX: 28, depthZ: 64, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
+      { center: [330, 94], widthX: 28, depthZ: 64, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
+      { center: [330, 31], widthX: 28, depthZ: 64, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'west', visibleFaces: { west: true } },
+      { center: [330, -31], widthX: 28, depthZ: 64, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallSage, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
+      { center: [330, -94], widthX: 28, depthZ: 64, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
+      { center: [330, -157], widthX: 28, depthZ: 64, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'west', visibleFaces: { west: true } },
+      { center: [330, -220], widthX: 28, depthZ: 64, floors: 5, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallOchre, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
+      { center: [330, -283], widthX: 28, depthZ: 64, floors: 6, minColliderTopY: 172, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { west: true } },
+
+      // 16 Outer-District Climbable & Perchable 4-Story City Block Townhouses (`±185..±284`)
+      { center: [-278, 62], widthX: 36, depthZ: 34, floors: 4, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [-278, 174], widthX: 34, depthZ: 36, floors: 5, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [-144, 276], widthX: 38, depthZ: 34, floors: 4, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'south', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [-194, 184], widthX: 28, depthZ: 28, floors: 4, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'east', visibleFaces: { north: true, south: true, east: true, west: true } },
+
+      { center: [278, 62], widthX: 36, depthZ: 34, floors: 4, addPerches: true, wallHex: PALETTE.wallSage, shutterHex: PALETTE.shutterTeal, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [278, 174], widthX: 34, depthZ: 36, floors: 5, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [144, 276], widthX: 38, depthZ: 34, floors: 4, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.parisGreen, roofStyle: 'terracotta', frontFace: 'south', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [194, 184], widthX: 28, depthZ: 28, floors: 4, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { north: true, south: true, east: true, west: true } },
+
+      { center: [-278, -62], widthX: 36, depthZ: 34, floors: 4, addPerches: true, wallHex: PALETTE.wallOchre, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'east', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [-278, -174], widthX: 34, depthZ: 36, floors: 5, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterOlive, roofStyle: 'terracotta', frontFace: 'east', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [-144, -276], widthX: 38, depthZ: 34, floors: 4, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'north', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [-194, -184], widthX: 28, depthZ: 28, floors: 4, addPerches: true, wallHex: PALETTE.wallMint, shutterHex: PALETTE.shutterCobalt, roofStyle: 'terracotta', frontFace: 'east', visibleFaces: { north: true, south: true, east: true, west: true } },
+
+      { center: [278, -62], widthX: 36, depthZ: 34, floors: 4, addPerches: true, wallHex: PALETTE.wallButtercup, shutterHex: PALETTE.parisGreen, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [278, -174], widthX: 34, depthZ: 36, floors: 5, addPerches: true, wallHex: PALETTE.wallApricot, shutterHex: PALETTE.shutterCobalt, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [144, -276], widthX: 38, depthZ: 34, floors: 4, addPerches: true, wallHex: PALETTE.wallCoral, shutterHex: PALETTE.shutterTeal, roofStyle: 'terracotta', frontFace: 'north', visibleFaces: { north: true, south: true, east: true, west: true } },
+      { center: [194, -184], widthX: 28, depthZ: 28, floors: 4, addPerches: true, wallHex: PALETTE.wallLimestone, shutterHex: PALETTE.shutterOlive, roofStyle: 'mansard', frontFace: 'west', visibleFaces: { north: true, south: true, east: true, west: true } },
     ];
     const quadStreet: Record<QuadrantKey, THREE.BufferGeometry[]> = {
       nw: [],
@@ -6382,12 +6526,12 @@ export class CityBlockBuilder {
       );
     });
 
-    // 4 Cylindrical Haussmann Corner Rotunda Towers & Copper Cupolas (`(±152.5, ±152.5)`, `top y = 144 SU`)
+    // 4 Cylindrical Haussmann Corner Rotunda Towers & Copper Cupolas (`(±315, ±315)`, `top y = 144 SU`)
     for (const [ci, cx, cz, qKey] of [
-      [0, -152.5, 152.5, 'nw'],
-      [1, 152.5, 152.5, 'ne'],
-      [2, -152.5, -152.5, 'sw'],
-      [3, 152.5, -152.5, 'se'],
+      [0, -315.0, 315.0, 'nw'],
+      [1, 315.0, 315.0, 'ne'],
+      [2, -315.0, -315.0, 'sw'],
+      [3, 315.0, -315.0, 'se'],
     ] as const) {
       quadStreet[qKey].push(
         transformGeo(rcyl(7.8, 8.2, 114.0, PALETTE.wallLimestone, 18), { pos: [cx, 57.0, cz] }),
@@ -6421,69 +6565,67 @@ export class CityBlockBuilder {
       );
     }
 
-    // 4 Beaux-Arts Boulevard Galleria & Tramway Carbarn Facade Portals (`(0, ±151.6)` & `(±151.6, 0)`)
-    const portalTermini: Array<[number, number, number, QuadrantKey, boolean]> = [
-      [0, 151.6, 0, 'nw', false],
-      [0, -151.6, Math.PI, 'se', false],
-      [-151.6, 0, Math.PI * 0.5, 'sw', true],
-      [151.6, 0, -Math.PI * 0.5, 'ne', true],
+    // 4 Open Beaux-Arts Triumphal Galleria Archways (`(0, ±151.6)` & `(±151.6, 0)`) — side piers open to outer avenues
+    const portalTermini: Array<[number, number, number, QuadrantKey]> = [
+      [0, 151.6, 0, 'nw'],
+      [0, -151.6, Math.PI, 'se'],
+      [-151.6, 0, Math.PI * 0.5, 'sw'],
+      [151.6, 0, -Math.PI * 0.5, 'ne'],
     ];
-    portalTermini.forEach(([px, pz, rotY, qKey, isTramDepot], pIdx) => {
+    portalTermini.forEach(([px, pz, rotY, qKey], pIdx) => {
       const alongZ = Math.abs(px) > 10;
       const inwardSign = alongZ ? -Math.sign(px) : -Math.sign(pz);
       const marqueeX = alongZ ? px + inwardSign * 2.8 : px;
       const marqueeZ = alongZ ? pz : pz + inwardSign * 2.8;
       quadStreet[qKey].push(
-        // Twin rusticated stone portal pilasters + grand arched iron-and-glass carbarn/galleria bays
-        transformGeo(rbox(26.0, 26.5, 2.6, 0.18, PALETTE.wallCreamTrim, 1), {
+        // Twin flanking rusticated limestone piers (center roadway completely open!)
+        transformGeo(rbox(4.8, 25.0, 4.2, 0.18, PALETTE.wallCreamTrim, 1), {
           rot: [0, rotY, 0],
-          pos: [px, 13.4, pz],
+          pos: [alongZ ? px : px - 14.5, 12.5, alongZ ? pz - 14.5 : pz],
         }),
-        transformGeo(rbox(9.6, 22.0, 2.9, 0.12, PALETTE.ironworkPlum, 1), {
+        transformGeo(rbox(4.8, 25.0, 4.2, 0.18, PALETTE.wallCreamTrim, 1), {
           rot: [0, rotY, 0],
-          pos: [alongZ ? px : px - 5.8, 11.2, alongZ ? pz - 5.8 : pz],
+          pos: [alongZ ? px : px + 14.5, 12.5, alongZ ? pz + 14.5 : pz],
         }),
-        transformGeo(rbox(9.6, 22.0, 2.9, 0.12, PALETTE.ironworkPlum, 1), {
+        // High overhead arch entablature (`y = 24.4`, clear roadway height below `22.2 SU`)
+        transformGeo(rbox(34.0, 4.4, 4.6, 0.18, PALETTE.wallLimestone, 1), {
           rot: [0, rotY, 0],
-          pos: [alongZ ? px : px + 5.8, 11.2, alongZ ? pz + 5.8 : pz],
+          pos: [px, 24.4, pz],
         }),
-        transformGeo(rbox(8.2, 19.6, 3.1, 0.08, isTramDepot ? PALETTE.windowWarmLit : PALETTE.windowGlass, 1), {
-          rot: [0, rotY, 0],
-          pos: [alongZ ? px : px - 5.8, 11.4, alongZ ? pz - 5.8 : pz],
-        }),
-        transformGeo(rbox(8.2, 19.6, 3.1, 0.08, isTramDepot ? PALETTE.windowWarmLit : PALETTE.windowGlass, 1), {
-          rot: [0, rotY, 0],
-          pos: [alongZ ? px : px + 5.8, 11.4, alongZ ? pz + 5.8 : pz],
-        }),
-        // Overhanging wrought-iron & copper glass marquee canopy (`y = 23.2`) + gilded station medallion
         transformGeo(
-          rbox(alongZ ? 6.2 : 28.4, 0.85, alongZ ? 28.4 : 6.2, 0.14, PALETTE.roofCopperPatina, 1),
-          { pos: [marqueeX, 23.2, marqueeZ] }
+          rbox(alongZ ? 6.2 : 34.4, 0.85, alongZ ? 34.4 : 6.2, 0.14, PALETTE.roofCopperPatina, 1),
+          { pos: [marqueeX, 26.8, marqueeZ] }
         ),
         transformGeo(rcyl(2.8, 2.8, 0.9, PALETTE.goldGlow, 18), {
           rot: [alongZ ? 0 : Math.PI * 0.5, 0, alongZ ? Math.PI * 0.5 : 0],
-          pos: [alongZ ? px + inwardSign * 1.45 : px, 29.8, alongZ ? pz : pz + inwardSign * 1.45],
+          pos: [alongZ ? px + inwardSign * 2.4 : px, 29.8, alongZ ? pz : pz + inwardSign * 2.4],
         }),
         transformGeo(rcyl(2.2, 2.2, 1.05, PALETTE.porcelainWhite, 18), {
           rot: [alongZ ? 0 : Math.PI * 0.5, 0, alongZ ? Math.PI * 0.5 : 0],
-          pos: [alongZ ? px + inwardSign * 1.48 : px, 29.8, alongZ ? pz : pz + inwardSign * 1.48],
+          pos: [alongZ ? px + inwardSign * 2.45 : px, 29.8, alongZ ? pz : pz + inwardSign * 2.45],
         })
       );
+      for (const side of [-1, 1] as const) {
+        this.physics.addStaticBox(
+          new THREE.Vector3(alongZ ? px : px + side * 14.5, 12.5, alongZ ? pz + side * 14.5 : pz),
+          new THREE.Vector3(alongZ ? 2.1 : 2.4, 12.5, alongZ ? 2.4 : 2.1)
+        );
+      }
       this.physics.addStaticBox(
-        new THREE.Vector3(marqueeX, 23.2, marqueeZ),
-        new THREE.Vector3(alongZ ? 3.1 : 14.2, 0.45, alongZ ? 14.2 : 3.1)
+        new THREE.Vector3(marqueeX, 26.8, marqueeZ),
+        new THREE.Vector3(alongZ ? 3.1 : 17.2, 0.45, alongZ ? 17.2 : 3.1)
       );
       this.perches.addStaticSegment(
         `boulevard_galleria_marquee_${pIdx}`,
         new THREE.Vector3(
-          alongZ ? marqueeX + inwardSign * 2.9 : marqueeX - 13.2,
-          23.68,
-          alongZ ? marqueeZ - 13.2 : marqueeZ + inwardSign * 2.9
+          alongZ ? marqueeX + inwardSign * 2.9 : marqueeX - 15.2,
+          27.28,
+          alongZ ? marqueeZ - 15.2 : marqueeZ + inwardSign * 2.9
         ),
         new THREE.Vector3(
-          alongZ ? marqueeX + inwardSign * 2.9 : marqueeX + 13.2,
-          23.68,
-          alongZ ? marqueeZ + 13.2 : marqueeZ + inwardSign * 2.9
+          alongZ ? marqueeX + inwardSign * 2.9 : marqueeX + 15.2,
+          27.28,
+          alongZ ? marqueeZ + 15.2 : marqueeZ + inwardSign * 2.9
         ),
         0.1,
         'metal'
@@ -6547,11 +6689,11 @@ export class CityBlockBuilder {
       'stone'
     );
 
-    // 18 Rolling Sunlit European Parkland Hills & Tapered Cypress Groves (`r = 248..304 SU`) -> `horizonHillsMesh` (`castShadow = false`)
+    // 18 Rolling Sunlit European Parkland Hills & Tapered Cypress Groves (`r = 405..495 SU`) -> `horizonHillsMesh` (`castShadow = false`)
     for (let h = 0; h < 18; h++) {
       const ha = (h / 18) * Math.PI * 2 + 0.17;
-      const hx = Math.cos(ha) * (248 + (h % 3) * 28);
-      const hz = Math.sin(ha) * (248 + (h % 3) * 28);
+      const hx = Math.cos(ha) * (405 + (h % 3) * 38);
+      const hz = Math.sin(ha) * (405 + (h % 3) * 38);
       const hillR = 38 + (h % 4) * 11;
       const hillH = 18 + (h % 3) * 8;
       const hillHex = h % 2 === 0 ? PALETTE.grassMeadow : PALETTE.leafSage;
@@ -7144,6 +7286,35 @@ export class CityBlockBuilder {
       [108, -141, PALETTE.leafSage],
       [68, -141, PALETTE.sakuraBlush],
       [28, -139, PALETTE.ginkgoGold],
+      // Expanded Outer-District Trees across the outer boulevards & corner parks
+      [-185, 96, PALETTE.leafSage],
+      [-185, 148, PALETTE.ginkgoGold],
+      [-278, 128, PALETTE.sakuraPink],
+      [-268, 260, PALETTE.leafSage],
+      [-290, 292, PALETTE.ginkgoGold],
+      [-64, 276, PALETTE.sakuraBlush],
+      [-24, 294, PALETTE.leafSage],
+      [185, 96, PALETTE.ginkgoGold],
+      [185, 148, PALETTE.leafSage],
+      [278, 128, PALETTE.sakuraPink],
+      [268, 260, PALETTE.ginkgoGold],
+      [290, 292, PALETTE.grassSunlit],
+      [64, 276, PALETTE.leafSage],
+      [24, 294, PALETTE.sakuraPink],
+      [-185, -110, PALETTE.leafSage],
+      [-185, -158, PALETTE.ginkgoGold],
+      [-278, -128, PALETTE.sakuraBlush],
+      [-268, -260, PALETTE.leafSage],
+      [-290, -292, PALETTE.ginkgoGold],
+      [-64, -276, PALETTE.leafSage],
+      [-24, -294, PALETTE.sakuraPink],
+      [185, -96, PALETTE.ginkgoGold],
+      [185, -148, PALETTE.leafSage],
+      [278, -128, PALETTE.sakuraBlush],
+      [268, -260, PALETTE.leafSage],
+      [290, -292, PALETTE.grassSunlit],
+      [64, -276, PALETTE.ginkgoGold],
+      [24, -294, PALETTE.leafSage],
     ];
     boulevardTrees.forEach(([btx, btz, bCol], bIdx) => {
       const th = 25.0 + (bIdx % 3) * 2.5;
@@ -7261,6 +7432,31 @@ export class CityBlockBuilder {
       [-64, -138],
       [135, -84],
       [104, -134],
+      // Expanded Outer Avenue & Park Lamps
+      [-18, 194],
+      [18, 194],
+      [-18, 262],
+      [18, 262],
+      [-18, -194],
+      [18, -194],
+      [-18, -262],
+      [18, -262],
+      [-194, 18],
+      [-194, -18],
+      [-262, 18],
+      [-262, -18],
+      [194, 18],
+      [194, -18],
+      [262, 18],
+      [262, -18],
+      [-214, 198],
+      [214, 198],
+      [-214, -198],
+      [214, -198],
+      [-248, 246],
+      [248, 246],
+      [-248, -246],
+      [248, -246],
     ];
     lampCoords.forEach(([lx, lz], idx) => {
       this.streetlampPositions.push(new THREE.Vector3(lx, 17.65, lz));
@@ -7337,6 +7533,35 @@ export class CityBlockBuilder {
         new THREE.Vector3(mx + 0.12, 17.55, mz),
         0.08,
         'metal'
+      );
+    }
+
+    // Outer Park Benches (`12` benches across the expanded districts, registered as static 2D obstacles)
+    for (const [bx, bz, bRot] of [
+      [-185, 118, Math.PI * 0.5],
+      [-278, 256, 0],
+      [-74, 274, Math.PI],
+      [185, 118, -Math.PI * 0.5],
+      [278, 256, 0],
+      [74, 274, Math.PI],
+      [-185, -124, Math.PI * 0.5],
+      [-278, -256, 0],
+      [-74, -274, Math.PI],
+      [185, -118, -Math.PI * 0.5],
+      [278, -256, 0],
+      [74, -274, Math.PI],
+    ] as const) {
+      const qKey = quadrantOf(bx, bz);
+      quadStreet[qKey].push(
+        transformGeo(rbox(5.0, 1.35, 1.85, 0.12, PALETTE.woodOak, 1), {
+          rot: [0, bRot, 0],
+          pos: [bx, 0.96, bz],
+        })
+      );
+      this.physics.addStaticBox(
+        new THREE.Vector3(bx, 1.0, bz),
+        new THREE.Vector3(2.6, 0.95, 1.0),
+        new THREE.Euler(0, bRot, 0)
       );
     }
 

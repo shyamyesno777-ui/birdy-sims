@@ -228,6 +228,7 @@ const _pigeonFoodCandidates: InteractiveProp[] = [];
 
 const _snapGroundHit = createGroundRaycastHit();
 const _steerHit = createGroundRaycastHit();
+const _steer2dOut = { x: 0, z: 0, steerX: 0, steerZ: 0, collided: false };
 const _humanGroundHit = createGroundRaycastHit();
 const _pigeonHit = createGroundRaycastHit();
 
@@ -948,6 +949,17 @@ export class NPCManager {
     dist: number,
     ignoreBody: CANNON.Body
   ): boolean {
+    const checkDist = Math.min(dist, 1.4);
+    if (
+      this.physics.isPointBlocked2D(
+        origin.x + dir.x * checkDist,
+        origin.z + dir.z * checkDist,
+        0.72
+      )
+    ) {
+      return false;
+    }
+
     const perpX = -dir.z;
     const perpZ = dir.x;
     for (let i = 0; i < STEER_LATERAL_OFFSETS.length; i++) {
@@ -1061,6 +1073,18 @@ export class NPCManager {
         h.cachedSteerDir.z += sepZ * 0.65;
         h.cachedSteerDir.normalize();
       }
+      this.physics.steerAndResolve2D(
+        h.root.position.x,
+        h.root.position.z,
+        h.cachedSteerDir.x,
+        h.cachedSteerDir.z,
+        0.72,
+        2.6,
+        _steer2dOut
+      );
+      h.root.position.x = _steer2dOut.x;
+      h.root.position.z = _steer2dOut.z;
+      h.cachedSteerDir.set(_steer2dOut.steerX, 0, _steer2dOut.steerZ);
     }
     h.hasCachedSteer = true;
   }
@@ -2436,7 +2460,8 @@ export class NPCManager {
     playerMode: 'grounded' | 'perched' | 'flying' = 'grounded',
     carriedPropKind: PropKind | null = null,
     tramX = 999,
-    canalBoats?: ReadonlyArray<{ xPos: number; baseZ: number }>
+    canalBoats?: ReadonlyArray<{ xPos: number; baseZ: number }>,
+    camPos?: THREE.Vector3
   ): void {
     this.frameCounter++;
     const clampedDt = Math.min(0.05, dt);
@@ -3087,11 +3112,17 @@ export class NPCManager {
             h.root.rotation.y = h.yaw;
 
             h.gaitPhase += clampedDt * (walkSpeed * 1.48);
-            this.applyWalkingGait(h, h.gaitPhase, propKind);
-            if (isRaining && propKind === 'none' && h.waveTimer <= 0) {
-              h.torsoPivot.rotation.x += 0.14 * this.envRainIntensity;
-              h.armRight.shoulder.rotation.x = -1.98;
-              h.armRight.elbow.rotation.x = -1.58;
+            const cDistSq = camPos
+              ? (h.root.position.x - camPos.x) * (h.root.position.x - camPos.x) +
+                (h.root.position.z - camPos.z) * (h.root.position.z - camPos.z)
+              : horizDistSq;
+            if (cDistSq <= 90 * 90) {
+              this.applyWalkingGait(h, h.gaitPhase, propKind);
+              if (isRaining && propKind === 'none' && h.waveTimer <= 0) {
+                h.torsoPivot.rotation.x += 0.14 * this.envRainIntensity;
+                h.armRight.shoulder.rotation.x = -1.98;
+                h.armRight.elbow.rotation.x = -1.58;
+              }
             }
           }
         }
@@ -3126,18 +3157,22 @@ export class NPCManager {
         h.paintingActive ||
         h.strumming;
 
+      const camHorizDistSq = camPos
+        ? (h.root.position.x - camPos.x) * (h.root.position.x - camPos.x) +
+          (h.root.position.z - camPos.z) * (h.root.position.z - camPos.z)
+        : horizDistSq;
+
       if (
-        !isActivelyWalking &&
         !hasActiveHumanReaction &&
-        horizDistSq > 95 * 95 &&
-        (this.frameCounter + h.steerFrameOffset) % 3 !== 0
+        camHorizDistSq > 90 * 90 &&
+        (!isActivelyWalking || (this.frameCounter + h.steerFrameOffset) % 4 !== 0)
       ) {
         continue;
       }
 
       const animDt =
-        !isActivelyWalking && !hasActiveHumanReaction && horizDistSq > 95 * 95
-          ? clampedDt * 3
+        !isActivelyWalking && !hasActiveHumanReaction && camHorizDistSq > 90 * 90
+          ? clampedDt * 4
           : clampedDt;
 
       // Smoothly settle legs when stationary or seated

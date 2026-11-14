@@ -33,6 +33,7 @@ import {
 } from 'three/tsl';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { WORLD_CONFIG } from '../core/WorldConfig.ts';
 import { PALETTE } from './Palette.ts';
 
 /**
@@ -720,11 +721,11 @@ export function createUnlitPastelFXMaterial(
 }
 
 /**
- * Procedural Painterly Sky Dome (`radius = 740 SU`) supporting full Dawn -> Day -> Sunset -> Moonlit Starry Night,
+ * Procedural Painterly Sky Dome supporting full Dawn -> Day -> Sunset -> Moonlit Starry Night,
  * overcast cloud cover, sun disc + sunset aureole, crescent/full moon halo, and twinkling procedural stars.
  */
 export function createSkyDomeMesh(): THREE.Mesh {
-  const geo = new THREE.SphereGeometry(740, 32, 24);
+  const geo = new THREE.SphereGeometry(WORLD_CONFIG.skyRadius, 32, 24);
   geo.deleteAttribute('uv');
 
   const mat = new THREE.MeshBasicNodeMaterial();
@@ -837,8 +838,8 @@ export function createStorybookRenderPipeline(
   const renderPipeline = new THREE.RenderPipeline(renderer);
   const isMobile = Boolean(opts?.isMobile);
 
-  // Pack signed normalView.xyz + normalized linear view-depth (0..1 over 460 SU) into RGBA HalfFloat prePass.
-  const linearDepth = clamp(positionView.z.negate().div(460.0), 0.0, 1.0);
+  // Pack signed normalView.xyz + normalized linear view-depth (0..1 over 680 SU) into RGBA HalfFloat prePass.
+  const linearDepth = clamp(positionView.z.negate().div(680.0), 0.0, 1.0);
   const prePass = pass(scene, camera, { samples: 0 });
   prePass.transparent = false;
   prePass.setMRT(
@@ -893,7 +894,7 @@ export function createStorybookRenderPipeline(
     const normDiffV = float(1.0).sub(clamp(dot(ndU.rgb.normalize(), ndD.rgb.normalize()), -1.0, 1.0));
     const normEdge = smoothstep(float(0.46), float(0.90), normDiffH.add(normDiffV)).mul(0.68);
 
-    const distFade = float(1.0).sub(smoothstep(float(0.55), float(0.93), centerDepth));
+    const distFade = float(1.0).sub(smoothstep(float(0.38), float(0.86), centerDepth));
     const edgeFactor = clamp(max(depthEdge, normEdge).mul(distFade).mul(0.56), 0.0, 0.56);
     const inkColor = aoShaded.mul(vec3(0.25, 0.20, 0.29));
     const inked = mix(aoShaded, inkColor, edgeFactor);

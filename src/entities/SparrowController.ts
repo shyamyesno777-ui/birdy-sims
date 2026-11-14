@@ -515,12 +515,8 @@ export class SparrowController {
             this.toggleGun();
           }
           if (code === 'Space') {
-            if (this.gunEquipped) {
-              this.fireQueued = true;
-            } else {
-              this.jumpQueued = true;
-              this.jumpBufferTimer = 0.10;
-            }
+            this.jumpQueued = true;
+            this.jumpBufferTimer = 0.10;
           }
           if (code === 'KeyE' || code === 'KeyF') {
             this.interactQueued = true;
@@ -1417,10 +1413,7 @@ export class SparrowController {
         this.gunAimPitch += (0 - this.gunAimPitch) * Math.min(1, clampedDt * 14.0);
       }
 
-      const wantsFire =
-        this.fireQueued ||
-        this.holdingMouseLeft ||
-        (this.gunEquipped && this.keys.has('Space'));
+      const wantsFire = this.fireQueued || this.holdingMouseLeft;
       if (this.gunEquipped && this.inputEnabled && !this.introLookTarget && wantsFire && this.fireCooldown <= 0) {
         this.fireQueued = false;
         this.fireGun();

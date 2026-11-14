@@ -350,6 +350,7 @@ export class AerialSocialAndDayManager {
   private emittingHp = false;
   private birdInvulnTimer = 0;
   private activeDefenderCount = 0;
+  private xpMultiplierFn: ((pos: THREE.Vector3) => number) | null = null;
   private toastTimer: number | null = null;
 
   // DOM HUD & Bird Phone Elements
@@ -662,7 +663,8 @@ export class AerialSocialAndDayManager {
     // 8. Event Subscriptions for XP & HP Sync (without touching CrowdRebellionManager)
     this.unsubFns.push(
       this.events.on('crowd:kill', () => {
-        this.awardXp(50);
+        const mul = this.xpMultiplierFn ? Math.max(1, this.xpMultiplierFn(this.lastBirdPos)) : 1;
+        this.awardXp(Math.round(50 * mul));
       }),
       this.events.on('crowd:intimidated', ({ respectGained }) => {
         this.awardXp(respectGained > 0 ? respectGained : 25);
@@ -827,6 +829,16 @@ export class AerialSocialAndDayManager {
     if (open && document.pointerLockElement) {
       document.exitPointerLock?.();
     }
+  }
+
+  public setXpMultiplierFn(fn: (pos: THREE.Vector3) => number): void {
+    this.xpMultiplierFn = fn;
+  }
+
+  public awardExternalXp(baseAmount: number, reasonPos?: THREE.Vector3): void {
+    const pos = reasonPos ?? this.lastBirdPos;
+    const mul = this.xpMultiplierFn ? Math.max(1, this.xpMultiplierFn(pos)) : 1;
+    this.awardXp(Math.round(baseAmount * mul));
   }
 
   private awardXp(amount: number): void {
@@ -1027,8 +1039,24 @@ export class AerialSocialAndDayManager {
     speed: number,
     owner: 'enemy' | 'ally'
   ): void {
-    const slot = this.bullets[this.bulletCursor];
-    this.bulletCursor = (this.bulletCursor + 1) % this.bullets.length;
+    let slot = this.bullets[this.bulletCursor];
+    if (slot.active) {
+      let foundInactive = false;
+      for (let i = 0; i < this.bullets.length; i++) {
+        const idx = (this.bulletCursor + i) % this.bullets.length;
+        if (!this.bullets[idx].active) {
+          slot = this.bullets[idx];
+          this.bulletCursor = (idx + 1) % this.bullets.length;
+          foundInactive = true;
+          break;
+        }
+      }
+      if (!foundInactive) {
+        this.bulletCursor = (this.bulletCursor + 1) % this.bullets.length;
+      }
+    } else {
+      this.bulletCursor = (this.bulletCursor + 1) % this.bullets.length;
+    }
     slot.active = true;
     slot.owner = owner;
     slot.age = 0;
@@ -1294,7 +1322,8 @@ export class AerialSocialAndDayManager {
     dt: number,
     elapsed: number,
     birdPos: THREE.Vector3,
-    gunEquipped: boolean
+    gunEquipped: boolean,
+    camPos?: THREE.Vector3
   ): void {
     this.lastBirdPos.copy(birdPos);
     this.gunEquipped = gunEquipped;
@@ -1373,12 +1402,15 @@ export class AerialSocialAndDayManager {
           b.peacefulKarmaCooldown = 14.0;
           this.addKarma(10, 'Peaceful Bird Flyby');
         }
-        // Subtle attentive head/body turn toward Birdy when nearby
-        if (dSq < 28 * 28) {
-          b.yaw = Math.atan2(birdPos.x - b.pos.x, birdPos.z - b.pos.z);
-          b.rig.root.rotation.y = b.yaw;
+        // Subtle attentive head/body turn toward Birdy when nearby; pause far idle bobbing for 60 FPS
+        const farIdle = camPos ? b.pos.distanceToSquared(camPos) > 105 * 105 : false;
+        if (!farIdle) {
+          if (dSq < 28 * 28) {
+            b.yaw = Math.atan2(birdPos.x - b.pos.x, birdPos.z - b.pos.z);
+            b.rig.root.rotation.y = b.yaw;
+          }
+          b.rig.bodyGroup.position.y = Math.sin(elapsed * 3.1 + b.flapPhase) * 0.03;
         }
-        b.rig.bodyGroup.position.y = Math.sin(elapsed * 3.1 + b.flapPhase) * 0.03;
       } else if (b.state === 'ally') {
         b.rig.heartGroup.rotation.y = elapsed * 2.4 + b.index;
         b.rig.heartGroup.position.y = 0.96 + Math.sin(elapsed * 3.6 + b.index) * 0.08;
@@ -1633,7 +1665,7 @@ export class AerialSocialAndDayManager {
               r.active = false;
               r.rig.root.visible = false;
               this.fx.spawnFeatherBurst(r.pos, 9, 3.8);
-              this.awardXp(50);
+              this.awardExternalXp(50, r.pos);
               hitAllyTarget = true;
               break;
             }
@@ -1655,7 +1687,7 @@ export class AerialSocialAndDayManager {
                 b.state = 'defeated';
                 b.rig.root.visible = false;
                 this.fx.spawnFeatherBurst(b.pos, 9, 3.8);
-                this.awardXp(50);
+                this.awardExternalXp(50, b.pos);
                 hitAllyTarget = true;
                 break;
               }

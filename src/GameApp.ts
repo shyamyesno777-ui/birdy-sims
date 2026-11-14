@@ -28,6 +28,7 @@ import { EnvironmentController } from './environment/EnvironmentController.ts';
 import { CrowdRebellionManager } from './entities/CrowdRebellionManager.ts';
 import { CombatStatusHUD } from './ui/CombatStatusHUD.ts';
 import { AerialSocialAndDayManager } from './entities/AerialSocialAndDayManager.ts';
+import { BreadTruckCrashManager } from './events/BreadTruckCrashManager.ts';
 
 export interface SparrowGameSession {
   events: EventBus<GameEventMap>;
@@ -56,7 +57,7 @@ function computeCappedDpr(
 ): number {
   if (isSoftwareGl) return 1;
   const pixelBudget = isMobile ? 1_250_000 : 2_350_000;
-  const maxDpr = isMobile ? 1.5 : 1.75;
+  const maxDpr = 1.5;
   const maxDprByBudget = Math.sqrt(pixelBudget / Math.max(1, w * h));
   const base = Math.max(1, Math.min(window.devicePixelRatio || 1, maxDpr, maxDprByBudget));
   return Math.max(0.75, Math.min(maxDpr, base * qualityScale));
@@ -112,7 +113,7 @@ export async function startGameApp(
   // Morning scene + procedural TSL sky dome + light atmospheric haze
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(PALETTE.skyHorizonDawn);
-  scene.fog = new THREE.FogExp2(PALETTE.fogDawn, 0.00046);
+  scene.fog = new THREE.FogExp2(PALETTE.fogDawn, 0.00042);
 
   const skyDome = createSkyDomeMesh();
   scene.add(skyDome);
@@ -135,9 +136,9 @@ export async function startGameApp(
 
   const csmNode = new CSMShadowNode(sunLight, {
     cascades: 3,
-    maxFar: 640,
+    maxFar: 780,
     mode: 'custom',
-    lightMargin: 320,
+    lightMargin: 360,
     customSplitsCallback: (_cascades: number, _near: number, _far: number, breaks: number[]) => {
       breaks.push(0.032, 0.17, 1.0);
     },
@@ -231,6 +232,17 @@ export async function startGameApp(
     container,
     worldHandles.streetlampPositions
   );
+
+  const breadCrash = new BreadTruckCrashManager(
+    scene,
+    physics,
+    audio,
+    fx,
+    container,
+    (amt, pos) => aerialManager.awardExternalXp(amt, pos)
+  );
+  crowdManager.setRespectMultiplierFn((pos) => breadCrash.getXpMultiplier(pos));
+  aerialManager.setXpMultiplierFn((pos) => breadCrash.getXpMultiplier(pos));
 
   combatHud.onRestart = () => {
     crowdManager.reviveBird();
@@ -482,6 +494,7 @@ export async function startGameApp(
     director.dispose();
     sparrow.dispose();
     birdCam.dispose();
+    breadCrash.dispose();
     aerialManager.dispose();
     crowdManager.dispose();
     npcs.dispose();
@@ -518,6 +531,7 @@ export async function startGameApp(
       npcs,
       crowdManager,
       aerialManager,
+      breadCrash,
       fx,
       audio,
       events,
@@ -570,6 +584,7 @@ export async function startGameApp(
     wakeAudio();
     combatHud.setVisible(true);
     aerialManager.setActive(true);
+    breadCrash.setStarted(true);
     sparrow.clearQueuedInputs();
     birdCam.beginIntroSequence(
       () => {
@@ -683,7 +698,8 @@ export async function startGameApp(
         sparrow.mode,
         sparrow.carriedProp?.kind ?? null,
         worldHandles.getTramX(),
-        worldHandles.getCanalBoats()
+        worldHandles.getCanalBoats(),
+        birdCam.camera.position
       );
       crowdManager.update(
         dt,
@@ -695,7 +711,14 @@ export async function startGameApp(
         isGunEquipped,
         sparrow.velocity
       );
-      aerialManager.update(dt, elapsed, sparrow.position, isGunEquipped);
+      aerialManager.update(
+        dt,
+        elapsed,
+        sparrow.position,
+        isGunEquipped,
+        birdCam.camera.position
+      );
+      breadCrash.update(dt, elapsed, sparrow.position, birdCam.camera.position);
       perches.refreshDynamicGrid();
       director.update(dt);
       fx.setEnvironmentState({

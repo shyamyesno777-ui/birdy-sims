@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { WORLD_CONFIG } from '../core/WorldConfig.ts';
 import type { PhysicsWorld, StaticCameraHit } from '../physics/PhysicsWorld.ts';
 import type {
   BirdMode,
@@ -80,7 +81,7 @@ export class BirdCamera {
   private readonly inputAbort = new AbortController();
 
   constructor(aspect: number, canvas: HTMLCanvasElement, onFirstInteract: () => void) {
-    this.camera = new THREE.PerspectiveCamera(54, aspect, 0.22, 880);
+    this.camera = new THREE.PerspectiveCamera(54, aspect, 0.22, WORLD_CONFIG.cameraFar);
     const signal = this.inputAbort.signal;
 
     canvas.addEventListener(

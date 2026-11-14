@@ -397,7 +397,7 @@ export class EnvironmentController {
     }
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.color.copy(_tmpFog);
-      const baseDensity = 0.00046 + nightFactor * 0.00028;
+      const baseDensity = 0.00042 + nightFactor * 0.00024;
       this.scene.fog.density =
         baseDensity + this.rainAmount * 0.00085 + this.mistAmount * 0.00145;
     }

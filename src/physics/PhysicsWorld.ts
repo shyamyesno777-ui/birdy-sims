@@ -174,6 +174,36 @@ const _ripplePos = new THREE.Vector3();
 const _updraftPos = new THREE.Vector3();
 const _eulerQuat = new THREE.Quaternion();
 
+export type StaticObstacle2D =
+  | {
+      kind: 'circle';
+      x: number;
+      z: number;
+      radius: number;
+      minX: number;
+      maxX: number;
+      minZ: number;
+      maxZ: number;
+    }
+  | {
+      kind: 'box';
+      x: number;
+      z: number;
+      hx: number;
+      hz: number;
+      cosYaw: number;
+      sinYaw: number;
+      minX: number;
+      maxX: number;
+      minZ: number;
+      maxZ: number;
+    };
+
+const OBSTACLE_CELL_SIZE = 16;
+function packCellKey(cx: number, cz: number): number {
+  return ((cx + 512) << 12) | ((cz + 512) & 0xfff);
+}
+
 /**
  * Manages cannon-es rigid-body simulation across the multi-block European neighborhood (~300 x 300 SU),
  * static & kinematic colliders, contextual bump reactions, bouncy awnings, thermal updrafts,
@@ -202,6 +232,8 @@ export class PhysicsWorld {
   private readonly glideLiftProps: InteractiveProp[] = [];
   private readonly buoyantProps: InteractiveProp[] = [];
   private readonly activeSquashTrampolines: TrampolineZone[] = [];
+  private readonly obstacleCells = new Map<number, StaticObstacle2D[]>();
+  private readonly staticObstacles: StaticObstacle2D[] = [];
   private readonly preStepHandler: () => void;
 
   private rayFrom = new CANNON.Vec3();
@@ -308,6 +340,38 @@ export class PhysicsWorld {
       body.quaternion.set(_eulerQuat.x, _eulerQuat.y, _eulerQuat.z, _eulerQuat.w);
     }
     this.world.addBody(body);
+
+    // Auto-register ground-level static walls, benches, planters & facades into the 2D NPC obstacle grid.
+    // Skip thin/elevated bridges & balconies (bottomY >= 2.2) and broad ground slabs (both half-extents > 42 SU).
+    const bottomY = center.y - halfExtents.y;
+    const topY = center.y + halfExtents.y;
+    const isGroundSlab = halfExtents.x > 42 && halfExtents.z > 42;
+    const isFlatPaving = halfExtents.y <= 0.35 && topY <= 0.52;
+    const hasSignificantTilt =
+      rotationEuler !== undefined &&
+      (Math.abs(rotationEuler.x) > 0.14 || Math.abs(rotationEuler.z) > 0.14);
+    if (!isGroundSlab && !isFlatPaving && !hasSignificantTilt && bottomY < 2.2 && topY > 0.65) {
+      const yaw = rotationEuler ? rotationEuler.y : 0;
+      const cosYaw = Math.cos(yaw);
+      const sinYaw = Math.sin(yaw);
+      const absCos = Math.abs(cosYaw);
+      const absSin = Math.abs(sinYaw);
+      const aabbHx = halfExtents.x * absCos + halfExtents.z * absSin;
+      const aabbHz = halfExtents.x * absSin + halfExtents.z * absCos;
+      this.insertStaticObstacle2D({
+        kind: 'box',
+        x: center.x,
+        z: center.z,
+        hx: halfExtents.x,
+        hz: halfExtents.z,
+        cosYaw,
+        sinYaw,
+        minX: center.x - aabbHx,
+        maxX: center.x + aabbHx,
+        minZ: center.z - aabbHz,
+        maxZ: center.z + aabbHz,
+      });
+    }
     return body;
   }
 
@@ -328,7 +392,236 @@ export class PhysicsWorld {
     body.addShape(new CANNON.Cylinder(rTop, rBottom, height, segments));
     body.position.set(center.x, center.y, center.z);
     this.world.addBody(body);
+
+    const bottomY = center.y - height * 0.5;
+    const topY = center.y + height * 0.5;
+    const rad = Math.max(rTop, rBottom);
+    if (bottomY < 2.2 && topY > 0.65 && height > 0.45 && rad > 0.12 && rad < 42) {
+      this.insertStaticObstacle2D({
+        kind: 'circle',
+        x: center.x,
+        z: center.z,
+        radius: rad,
+        minX: center.x - rad,
+        maxX: center.x + rad,
+        minZ: center.z - rad,
+        maxZ: center.z + rad,
+      });
+    }
     return body;
+  }
+
+  public insertStaticObstacle2D(obs: StaticObstacle2D): void {
+    this.staticObstacles.push(obs);
+    const minCx = Math.floor(obs.minX / OBSTACLE_CELL_SIZE);
+    const maxCx = Math.floor(obs.maxX / OBSTACLE_CELL_SIZE);
+    const minCz = Math.floor(obs.minZ / OBSTACLE_CELL_SIZE);
+    const maxCz = Math.floor(obs.maxZ / OBSTACLE_CELL_SIZE);
+    for (let cx = minCx; cx <= maxCx; cx++) {
+      for (let cz = minCz; cz <= maxCz; cz++) {
+        const key = packCellKey(cx, cz);
+        let bucket = this.obstacleCells.get(key);
+        if (!bucket) {
+          bucket = [];
+          this.obstacleCells.set(key, bucket);
+        }
+        bucket.push(obs);
+      }
+    }
+  }
+
+  /**
+   * Returns true if circle (x, z, radius) overlaps any registered static ground obstacle.
+   */
+  public isPointBlocked2D(x: number, z: number, radius = 0.55): boolean {
+    const minCx = Math.floor((x - radius) / OBSTACLE_CELL_SIZE);
+    const maxCx = Math.floor((x + radius) / OBSTACLE_CELL_SIZE);
+    const minCz = Math.floor((z - radius) / OBSTACLE_CELL_SIZE);
+    const maxCz = Math.floor((z + radius) / OBSTACLE_CELL_SIZE);
+    const rSq = radius * radius;
+
+    for (let cx = minCx; cx <= maxCx; cx++) {
+      for (let cz = minCz; cz <= maxCz; cz++) {
+        const bucket = this.obstacleCells.get(packCellKey(cx, cz));
+        if (!bucket) continue;
+        for (let i = 0; i < bucket.length; i++) {
+          const o = bucket[i];
+          if (
+            x + radius < o.minX ||
+            x - radius > o.maxX ||
+            z + radius < o.minZ ||
+            z - radius > o.maxZ
+          ) {
+            continue;
+          }
+          if (o.kind === 'circle') {
+            const dx = x - o.x;
+            const dz = z - o.z;
+            const sumR = o.radius + radius;
+            if (dx * dx + dz * dz < sumR * sumR) return true;
+          } else {
+            const dx = x - o.x;
+            const dz = z - o.z;
+            // Transform into obstacle local frame (inverse yaw rotation)
+            const lx = dx * o.cosYaw - dz * o.sinYaw;
+            const lz = dx * o.sinYaw + dz * o.cosYaw;
+            const cxLocal = Math.max(-o.hx, Math.min(o.hx, lx));
+            const czLocal = Math.max(-o.hz, Math.min(o.hz, lz));
+            const ex = lx - cxLocal;
+            const ez = lz - czLocal;
+            if (ex * ex + ez * ez < rSq) return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Resolves 2D circle/OBB obstacle overlap AND computes a smooth tangential slide steering vector
+   * so NPCs glide around tree trunks, benches, and building corners instead of walking through or sticking.
+   */
+  public steerAndResolve2D(
+    x: number,
+    z: number,
+    dirX: number,
+    dirZ: number,
+    agentRadius: number,
+    lookAheadDist: number,
+    out: { x: number; z: number; steerX: number; steerZ: number; collided: boolean }
+  ): void {
+    let rx = x;
+    let rz = z;
+    let steerX = dirX;
+    let steerZ = dirZ;
+    let collided = false;
+
+    const searchR = agentRadius + lookAheadDist;
+    const minCx = Math.floor((rx - searchR) / OBSTACLE_CELL_SIZE);
+    const maxCx = Math.floor((rx + searchR) / OBSTACLE_CELL_SIZE);
+    const minCz = Math.floor((rz - searchR) / OBSTACLE_CELL_SIZE);
+    const maxCz = Math.floor((rz + searchR) / OBSTACLE_CELL_SIZE);
+    const lookR = agentRadius + lookAheadDist;
+
+    for (let cx = minCx; cx <= maxCx; cx++) {
+      for (let cz = minCz; cz <= maxCz; cz++) {
+        const bucket = this.obstacleCells.get(packCellKey(cx, cz));
+        if (!bucket) continue;
+        for (let i = 0; i < bucket.length; i++) {
+          const o = bucket[i];
+          if (
+            rx + searchR < o.minX ||
+            rx - searchR > o.maxX ||
+            rz + searchR < o.minZ ||
+            rz - searchR > o.maxZ
+          ) {
+            continue;
+          }
+
+          let nx = 0;
+          let nz = 0;
+          let dist = 0;
+          let effRadius = agentRadius;
+
+          if (o.kind === 'circle') {
+            const dx = rx - o.x;
+            const dz = rz - o.z;
+            dist = Math.hypot(dx, dz);
+            effRadius = o.radius + agentRadius;
+            if (dist >= effRadius + lookAheadDist) continue;
+            if (dist > 1e-4) {
+              nx = dx / dist;
+              nz = dz / dist;
+            } else {
+              nx = 1;
+              nz = 0;
+              dist = 0;
+            }
+          } else {
+            const dx = rx - o.x;
+            const dz = rz - o.z;
+            const lx = dx * o.cosYaw - dz * o.sinYaw;
+            const lz = dx * o.sinYaw + dz * o.cosYaw;
+            const cxLocal = Math.max(-o.hx, Math.min(o.hx, lx));
+            const czLocal = Math.max(-o.hz, Math.min(o.hz, lz));
+            const ex = lx - cxLocal;
+            const ez = lz - czLocal;
+            dist = Math.hypot(ex, ez);
+
+            if (dist > 1e-4) {
+              if (dist >= lookR) continue;
+              const lnx = ex / dist;
+              const lnz = ez / dist;
+              // Rotate normal back to world space
+              nx = lnx * o.cosYaw + lnz * o.sinYaw;
+              nz = -lnx * o.sinYaw + lnz * o.cosYaw;
+              effRadius = agentRadius;
+            } else {
+              // Center lies inside OBB footprint; eject along shallowest axis
+              const penX = o.hx - Math.abs(lx);
+              const penZ = o.hz - Math.abs(lz);
+              const lnx = penX < penZ ? (lx >= 0 ? 1 : -1) : 0;
+              const lnz = penX < penZ ? 0 : (lz >= 0 ? 1 : -1);
+              nx = lnx * o.cosYaw + lnz * o.sinYaw;
+              nz = -lnx * o.sinYaw + lnz * o.cosYaw;
+              const penDepth = Math.min(penX, penZ) + agentRadius;
+              rx += nx * penDepth;
+              rz += nz * penDepth;
+              collided = true;
+              const dotDir = steerX * nx + steerZ * nz;
+              if (dotDir < 0) {
+                steerX -= nx * dotDir;
+                steerZ -= nz * dotDir;
+              }
+              continue;
+            }
+          }
+
+          // Smooth anticipatory steering if obstacle lies ahead
+          const towardObstacle = -(dirX * nx + dirZ * nz);
+          if (towardObstacle > -0.15 && dist < effRadius + lookAheadDist) {
+            const proximity = 1 - Math.max(0, dist - effRadius) / Math.max(0.1, lookAheadDist);
+            // Tangent choice biased consistently toward moving direction around obstacle
+            const t1x = -nz;
+            const t1z = nx;
+            const sign = dirX * t1x + dirZ * t1z >= 0 ? 1 : -1;
+            const tx = t1x * sign;
+            const tz = t1z * sign;
+            const avoidWeight = Math.max(0, towardObstacle + 0.15) * proximity * 1.45;
+            steerX += (tx * 0.92 + nx * 0.55) * avoidWeight;
+            steerZ += (tz * 0.92 + nz * 0.55) * avoidWeight;
+          }
+
+          // Hard non-overlapping separation
+          if (dist < effRadius) {
+            const push = effRadius - dist + 0.015;
+            rx += nx * push;
+            rz += nz * push;
+            collided = true;
+            const inward = steerX * nx + steerZ * nz;
+            if (inward < 0) {
+              steerX -= nx * inward * 1.05;
+              steerZ -= nz * inward * 1.05;
+            }
+          }
+        }
+      }
+    }
+
+    const sLen = Math.hypot(steerX, steerZ);
+    if (sLen > 1e-4) {
+      steerX /= sLen;
+      steerZ /= sLen;
+    } else {
+      steerX = dirX;
+      steerZ = dirZ;
+    }
+
+    out.x = rx;
+    out.z = rz;
+    out.steerX = steerX;
+    out.steerZ = steerZ;
+    out.collided = collided;
   }
 
   public addKinematicCylinder(
@@ -1373,5 +1666,7 @@ export class PhysicsWorld {
     this.updrafts.length = 0;
     this.basins.length = 0;
     this.peckSwitches.length = 0;
+    this.obstacleCells.clear();
+    this.staticObstacles.length = 0;
   }
 }
